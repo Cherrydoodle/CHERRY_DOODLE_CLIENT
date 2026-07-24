@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { PostgrestError } from "@supabase/supabase-js";
 import { unstable_cache } from "next/cache";
 import { z } from "zod";
 
@@ -14,6 +15,25 @@ import { getPublicSupabaseConfig } from "@/lib/public-env";
 // caller's session), and cookies() is a dynamic API that would force every page depending on these
 // functions - including the root layout's nav and SSG'd product pages - into per-request rendering.
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
+import { logger } from "@/lib/observability/logger";
+
+// A bare "X could not be loaded." says nothing about whether the query hit a bad
+// API key, a missing relation, or an unreachable host — and ApiError.message is
+// echoed to clients verbatim by toProblem, so the Postgrest detail can't live
+// there. It goes to the server log and onto `cause` instead. That matters most
+// during `next build`: generateStaticParams and the prerender pass both call into
+// this file, and Next prints the thrown error (cause chain included) as the sole
+// record of why a deploy failed.
+function catalogUnavailable(operation: string, message: string, error: PostgrestError): ApiError {
+  logger.error("Catalog query failed", {
+    operation,
+    supabaseCode: error.code,
+    supabaseMessage: error.message,
+    supabaseDetails: error.details,
+    supabaseHint: error.hint,
+  });
+  return new ApiError(503, "SERVICE_UNAVAILABLE", message, undefined, { cause: error });
+}
 
 const colorSchema = z.object({
   id: z.string().uuid(), name: z.string(), slug: z.string(), hex: z.string(), variantId: z.string().uuid(), sku: z.string(),
@@ -59,7 +79,7 @@ function summaryFromRow(input: unknown): ProductSummaryDTO {
 async function fetchCategories(): Promise<CategoryDTO[]> {
   const supabase = createAdminSupabaseClient();
   const { data, error } = await supabase.from("public_category_tree").select("*").order("sort_order");
-  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Categories could not be loaded.");
+  if (error) throw catalogUnavailable("fetchCategories", "Categories could not be loaded.", error);
   return (data ?? []).map((input) => {
     const row = categoryRowSchema.parse(input);
     return {
@@ -146,7 +166,7 @@ async function fetchProducts(filters: ProductFilters): Promise<ProductListDTO> {
   else query = query.order("featured_sort_order", { ascending: true, nullsFirst: false }).order("id");
 
   const { data, error, count } = await query.range(offset, offset + filters.limit - 1);
-  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Products could not be loaded.");
+  if (error) throw catalogUnavailable("listProducts", "Products could not be loaded.", error);
   const items = (data ?? []).map(summaryFromRow);
   const total = count ?? items.length;
   return { items, total, nextCursor: offset + items.length < total ? encodeCursor(offset + items.length) : null };
@@ -210,7 +230,7 @@ export async function getPublicProductSummaries(productIds: string[]): Promise<P
   }
   const supabase = createAdminSupabaseClient();
   const { data, error } = await supabase.from("public_product_cards").select("*").in("id", productIds);
-  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Products could not be loaded.");
+  if (error) throw catalogUnavailable("listProductsByIds", "Products could not be loaded.", error);
   const byId = new Map((data ?? []).map((row) => {
     const summary = summaryFromRow(row);
     return [summary.id, summary] as const;
@@ -224,7 +244,7 @@ export async function getPublicProductSummaries(productIds: string[]): Promise<P
 async function fetchProductDetail(slug: string): Promise<ProductDetailDTO | null> {
   const supabase = createAdminSupabaseClient();
   const { data, error } = await supabase.from("public_product_cards").select("*").eq("slug", slug).maybeSingle();
-  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Product could not be loaded.");
+  if (error) throw catalogUnavailable("fetchProductDetail", "Product could not be loaded.", error);
   if (!data) return null;
   const row: ProductRow = productRowSchema.parse(data);
   const summary = summaryFromRow(row);
@@ -233,7 +253,7 @@ async function fetchProductDetail(slug: string): Promise<ProductDetailDTO | null
     .select("position,alt_text_override,media_assets!inner(id,storage_key,storage_provider,alt_text,width,height,status)")
     .eq("product_id", row.id)
     .order("position");
-  if (mediaError) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Product media could not be loaded.");
+  if (mediaError) throw catalogUnavailable("fetchProductMedia", "Product media could not be loaded.", mediaError);
   const gallery = (mediaRows ?? []).flatMap((entry) => {
     const media = Array.isArray(entry.media_assets) ? entry.media_assets[0] : entry.media_assets;
     if (!media || media.status !== "ready" || media.storage_provider !== "cloudinary") return [];
@@ -307,7 +327,7 @@ async function listActiveHeroBanners() {
     .is("deleted_at", null)
     .order("sort_order")
     .order("created_at");
-  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Banners could not be loaded.");
+  if (error) throw catalogUnavailable("listBanners", "Banners could not be loaded.", error);
   return (data ?? []).filter(isWithinSchedule);
 }
 
@@ -369,7 +389,7 @@ export async function listAllProductSlugs(): Promise<string[]> {
   if (!getPublicSupabaseConfig()) return staticListProducts({ sort: "featured", limit: 1000 }).items.map((item) => item.slug);
   const admin = createAdminSupabaseClient();
   const { data, error } = await admin.from("products").select("slug").eq("status", "published").is("deleted_at", null);
-  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Product slugs could not be loaded.");
+  if (error) throw catalogUnavailable("listAllProductSlugs", "Product slugs could not be loaded.", error);
   return (data ?? []).map((row) => row.slug as string);
 }
 
@@ -377,6 +397,6 @@ export async function listAllCategorySlugs(): Promise<string[]> {
   if (!getPublicSupabaseConfig()) return staticCategories().map((category) => category.slug);
   const admin = createAdminSupabaseClient();
   const { data, error } = await admin.from("categories").select("slug").is("parent_id", null).eq("is_active", true).is("deleted_at", null);
-  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Category slugs could not be loaded.");
+  if (error) throw catalogUnavailable("listAllCategorySlugs", "Category slugs could not be loaded.", error);
   return (data ?? []).map((row) => row.slug as string);
 }

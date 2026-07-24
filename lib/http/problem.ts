@@ -3,13 +3,17 @@ import { ZodError } from "zod";
 import { ConfigurationError } from "@/lib/env.server";
 
 export class ApiError extends Error {
+  // `options.cause` carries the underlying failure (a PostgrestError, a network
+  // error) for logs, Sentry, and Node's error inspector, which prints the cause
+  // chain. toProblem below never reads it, so nothing here reaches the client.
   constructor(
     public readonly status: number,
     public readonly code: string,
     message: string,
     public readonly errors?: Array<{ path: string; message: string }>,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = "ApiError";
   }
 }
