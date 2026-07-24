@@ -1,0 +1,61 @@
+name: Storefront and API CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # Requires repo secrets pointing at a TEST/staging Supabase project (never
+  # production): NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+  # SUPABASE_SECRET_KEY. Unlike catalog reads (which fall back to static demo
+  # data with no Supabase configured, see features/catalog/repository.ts), the
+  # add-to-cart flow this test exercises writes through
+  # lib/supabase/admin.ts to a real database and has no such fallback.
+  # CLOUDINARY_*/RAZORPAY_*/GUEST_CART_TOKEN_PEPPER/APP_HMAC_SECRET/CRON_SECRET
+  # just need to be present and correctly formatted (dev mode only checks
+  # format, not real validity — see lib/env.server.ts#assertServerEnv) for the
+  # dev server to boot; generate throwaway 32+ byte values for the three
+  # owner-generated secrets with:
+  #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  e2e:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          NEXT_PUBLIC_SITE_URL: http://localhost:3000
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          CLOUDINARY_CLOUD_NAME: e2e-placeholder
+          CLOUDINARY_API_KEY: "123456789012345"
+          CLOUDINARY_API_SECRET: e2e-placeholder-secret
+          RAZORPAY_MODE: test
+          RAZORPAY_KEY_ID: rzp_test_e2eplaceholder
+          RAZORPAY_KEY_SECRET: e2e-placeholder-secret
+          RAZORPAY_WEBHOOK_SECRET: e2e0000e2e0000e2e0000e2e0000e2e0
+          GUEST_CART_TOKEN_PEPPER: e2e0000000000000000000000000000
+          APP_HMAC_SECRET: e2e1111111111111111111111111111
+          CRON_SECRET: e2e2222222222222222222222222222
