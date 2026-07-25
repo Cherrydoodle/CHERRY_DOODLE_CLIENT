@@ -24,7 +24,7 @@ type ContentCreate = z.infer<typeof contentCreateSchema>;
 type ContentUpdate = z.infer<typeof contentUpdateSchema>;
 type RoleUpdate = z.infer<typeof roleUpdateSchema>;
 
-function readyMediaDto(value: unknown) {
+export function readyMediaDto(value: unknown) {
   const media = Array.isArray(value) ? value[0] : value as Record<string, unknown> | null;
   if (!media || media.status !== "ready" || media.storage_provider !== "cloudinary" || !media.storage_key) return null;
   return mediaImageDto({ id: String(media.id), storageKey: String(media.storage_key), alt: String(media.alt_text ?? ""), width: Number(media.width ?? 1), height: Number(media.height ?? 1) });
@@ -32,8 +32,10 @@ function readyMediaDto(value: unknown) {
 
 // S10: an admin mutation that cannot be audited must not silently report success
 // -- the underlying write already happened, but the caller (and the client) needs
-// to know the trail is broken, so this throws rather than only logging.
-async function audit(actor: AuthContext, action: string, resourceType: string, resourceId: string | null, before: unknown, after: unknown, requestId: string) {
+// to know the trail is broken, so this throws rather than only logging. Exported so
+// other admin-resource modules (e.g. features/offers/service.ts) that don't own a
+// content_blocks-backed resource can still audit through the same helper.
+export async function audit(actor: AuthContext, action: string, resourceType: string, resourceId: string | null, before: unknown, after: unknown, requestId: string) {
   const admin = createAdminSupabaseClient();
   const { error } = await admin.from("audit_logs").insert({
     actor_user_id: actor.userId, actor_role: actor.role, action, resource_type: resourceType, resource_id: resourceId,
@@ -334,7 +336,7 @@ async function requireActiveCategory(categoryId: string) {
   if (!data) throw new ApiError(422, "CATEGORY_INVALID", "Primary category must be active.");
 }
 
-async function requireReadyMedia(mediaId: string, purposes: Array<"product" | "category" | "hero" | "content" | "avatar">) {
+export async function requireReadyMedia(mediaId: string, purposes: Array<"product" | "category" | "hero" | "content" | "avatar">) {
   const admin = createAdminSupabaseClient();
   const { data } = await admin.from("media_assets").select("id,status,purpose").eq("id", mediaId).eq("status", "ready").in("purpose", purposes).is("deleted_at", null).maybeSingle();
   if (!data) throw new ApiError(422, "MEDIA_NOT_READY", `Media asset must be ready and have purpose: ${purposes.join(" or ")}.`);

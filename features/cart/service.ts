@@ -6,6 +6,7 @@ import { cookies } from "next/headers";
 import type { ProductSummaryDTO } from "@/features/catalog/types";
 import { mediaImageDto } from "@/features/media/delivery";
 import type { CartDTO } from "@/features/cart/types";
+import { resolveOfferPrices, type ResolvedOfferPrice } from "@/features/offers/pricing";
 import { optionalAuth, requireUser } from "@/lib/auth/authorization";
 import { requireApplicationSecrets } from "@/lib/env.server";
 import { ApiError } from "@/lib/http/problem";
@@ -79,13 +80,17 @@ function cartCurrency(dtoItems: CartDTO["items"]): string {
   return dtoItems[0]?.product.pricing.currency ?? "INR";
 }
 
-function productSummary(product: RawProduct, variant: RawVariant, color: RawColor): ProductSummaryDTO {
+function productSummary(product: RawProduct, variant: RawVariant, color: RawColor, offer: ResolvedOfferPrice | null): ProductSummaryDTO {
   const mediaRelation = product.product_media.find((entry) => entry.is_primary);
   const media = mediaRelation ? one(mediaRelation.media_assets) : undefined;
   const fallback = { id: product.id, alt: product.name, width: 1, height: 1, urls: { thumb: "/favicon.ico", card: "/favicon.ico", detail: "/favicon.ico" } };
+  const effective = offer?.offerPriceCents ?? product.sale_price_cents ?? product.base_price_cents;
   return {
     id: product.id, slug: product.slug, name: product.name, label: product.label,
-    pricing: { currency: product.currency, listCents: product.base_price_cents, saleCents: product.sale_price_cents, effectiveCents: product.sale_price_cents ?? product.base_price_cents },
+    pricing: {
+      currency: product.currency, listCents: product.base_price_cents, saleCents: offer?.offerPriceCents ?? product.sale_price_cents, effectiveCents: effective,
+      offer: offer ? { id: offer.offerId, name: offer.offerName, slug: offer.offerSlug, discountPercent: offer.discountPercent, endsAt: offer.endsAt } : null,
+    },
     primaryImage: media && media.status === "ready" && media.storage_provider === "cloudinary" ? mediaImageDto({ id: media.id, storageKey: media.storage_key, alt: mediaRelation?.alt_text_override ?? media.alt_text, width: media.width ?? 1, height: media.height ?? 1 }) : fallback,
     colors: [{ id: color.id, name: color.name, slug: color.slug, hex: color.hex_code }],
     defaultVariantId: variant.id,
@@ -115,6 +120,12 @@ export async function getCartById(cart: CartRecord, owner: "guest" | "user"): Pr
     for (const variant of (variants ?? []) as unknown as RawVariant[]) variantsById.set(variant.id, variant);
   }
 
+  const productIds = [...variantsById.values()].flatMap((variant) => {
+    const product = one(variant.products);
+    return product ? [product.id] : [];
+  });
+  const offers = await resolveOfferPrices(productIds);
+
   const dtoItems: CartDTO["items"] = [];
   for (const item of items) {
     const variant = variantsById.get(item.product_variant_id);
@@ -122,12 +133,13 @@ export async function getCartById(cart: CartRecord, owner: "guest" | "user"): Pr
     const product = one(variant.products);
     const color = one(variant.colors);
     if (!product || !color) continue;
+    const offer = offers.get(product.id) ?? null;
     const unavailable = !variant.is_active || variant.deleted_at !== null || product.status !== "published" || product.deleted_at !== null || variant.stock_quantity <= 0;
     const warning = unavailable ? "out_of_stock" : item.quantity > variant.stock_quantity ? "quantity_reduced" : null;
-    const unit = product.sale_price_cents ?? product.base_price_cents;
+    const unit = offer?.offerPriceCents ?? product.sale_price_cents ?? product.base_price_cents;
     dtoItems.push({
       id: item.id, quantity: item.quantity, variant: { id: variant.id, sku: variant.sku, color: { id: color.id, name: color.name, slug: color.slug, hex: color.hex_code } },
-      product: productSummary(product, variant, color), unitPriceCents: unit, lineTotalCents: unit * item.quantity,
+      product: productSummary(product, variant, color, offer), unitPriceCents: unit, lineTotalCents: unit * item.quantity,
       originalLineTotalCents: product.base_price_cents * item.quantity, warning,
     });
   }

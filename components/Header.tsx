@@ -109,7 +109,7 @@ export function Header({ categories, marquee, storeName, logo }: { categories: C
             </Link>
           );
         })}
-        <Link href="/category/writing-tools?sale=true" className="ml-auto text-sale">Sale ♡</Link>
+        <Link href="/offers" className={`ml-auto text-sale ${pathname.startsWith("/offers") ? "underline" : ""}`}>Sale ♡</Link>
       </nav>
     </header>
   );

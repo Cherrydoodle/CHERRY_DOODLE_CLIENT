@@ -10,6 +10,7 @@ import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { enqueueEmail } from "@/features/email/service";
 import type { CheckoutConfirmationInput, CheckoutStartInput, CheckoutVerifyInput } from "@/features/checkout/schemas";
 import { razorpayWebhookSchema } from "@/features/checkout/schemas";
+import { resolveOfferPrices } from "@/features/offers/pricing";
 import { mapOrderDetailRow, ORDER_DETAIL_SELECT, type MyOrderDetailDTO } from "@/features/customer-orders/dto";
 import { processRefundWebhookEvent } from "@/features/refunds/service";
 import {
@@ -110,13 +111,19 @@ async function resolveCheckoutLines(input: CheckoutStartInput) {
   if (products.size !== slugs.length) throw new ApiError(422, "PRODUCT_UNAVAILABLE", "One or more products are no longer available.");
 
   const productIds = [...products.values()].map((product) => product.id);
-  const { data: variantRows, error: variantsError } = await admin
-    .from("product_variants")
-    .select("id,product_id,sku,stock_quantity,is_active,deleted_at,sort_order,colors(name,slug)")
-    .in("product_id", productIds)
-    .eq("is_active", true)
-    .is("deleted_at", null)
-    .order("sort_order", { ascending: true });
+  // Re-priced here rather than trusted from the browser, same as base_price_cents/
+  // sale_price_cents above: this is the money authority (RZ-030's trust boundary),
+  // so an offer that expired between page load and checkout can never be charged.
+  const [{ data: variantRows, error: variantsError }, offers] = await Promise.all([
+    admin
+      .from("product_variants")
+      .select("id,product_id,sku,stock_quantity,is_active,deleted_at,sort_order,colors(name,slug)")
+      .in("product_id", productIds)
+      .eq("is_active", true)
+      .is("deleted_at", null)
+      .order("sort_order", { ascending: true }),
+    resolveOfferPrices(productIds),
+  ]);
   if (variantsError) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Product options could not be validated for checkout.");
 
   const variantsByProduct = new Map<string, RawVariant[]>();
@@ -143,7 +150,7 @@ async function resolveCheckoutLines(input: CheckoutStartInput) {
     const existing = linesByVariant.get(variant.id);
     const quantity = (existing?.quantity ?? 0) + requested.quantity;
     if (quantity > 99) throw new ApiError(422, "QUANTITY_INVALID", `The quantity for ${product.name} cannot exceed 99.`);
-    const unitPrice = product.sale_price_cents ?? product.base_price_cents;
+    const unitPrice = offers.get(product.id)?.offerPriceCents ?? product.sale_price_cents ?? product.base_price_cents;
     linesByVariant.set(variant.id, {
       productId: product.id,
       productVariantId: variant.id,
