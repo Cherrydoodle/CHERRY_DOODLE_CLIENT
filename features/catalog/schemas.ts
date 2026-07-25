@@ -15,6 +15,7 @@ export function parseProductFilters(url: URL, search = false): ProductFilters {
     category: optionalSlug(url.searchParams.get("category")),
     sub: optionalSlug(url.searchParams.get("sub")),
     sale: booleanParam(url.searchParams.get("sale")),
+    offer: booleanParam(url.searchParams.get("offer")),
     isNew: booleanParam(url.searchParams.get("new")),
     bestseller: booleanParam(url.searchParams.get("bestseller")),
     color: optionalSlug(url.searchParams.get("color")),

@@ -13,6 +13,7 @@ export type MoneyDTO = {
   listCents: number;
   saleCents: number | null;
   effectiveCents: number;
+  offer?: { id: string; name: string; slug: string; discountPercent: number | null; endsAt: string | null } | null;
 };
 
 export type ColorDTO = { id: string; name: string; slug: string; hex: string };
@@ -70,6 +71,7 @@ export type ProductFilters = {
   category?: string;
   sub?: string;
   sale?: boolean;
+  offer?: boolean;
   isNew?: boolean;
   bestseller?: boolean;
   color?: string;

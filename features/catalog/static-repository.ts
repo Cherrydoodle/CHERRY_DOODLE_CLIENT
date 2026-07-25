@@ -69,6 +69,10 @@ export function staticListProducts(filters: ProductFilters): ProductListDTO {
   if (filters.category) list = list.filter((product) => product.category === filters.category);
   if (filters.sub) list = list.filter((product) => product.subcategory === filters.sub);
   if (filters.sale) list = list.filter((product) => product.salePrice !== undefined);
+  // The static fallback catalog (used when Supabase isn't configured) carries no
+  // offer data, so an offer-only filter always yields an empty list rather than
+  // silently ignoring the filter and returning everything.
+  if (filters.offer) list = [];
   if (filters.isNew) list = list.filter((product) => product.badges.includes("new"));
   if (filters.bestseller) list = list.filter((product) => product.badges.includes("bestseller"));
   if (filters.color) list = list.filter((product) => product.colors.some((color) => colorSlug(color.name) === filters.color));

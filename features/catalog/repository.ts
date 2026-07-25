@@ -47,6 +47,8 @@ const productRowSchema = z.object({
   alt_text: z.string(), width: z.number().int().nullable(), height: z.number().int().nullable(), colors: z.array(colorSchema),
   availability: z.enum(["in_stock", "low_stock", "out_of_stock"]), badges: z.array(z.enum(["new", "bestseller", "sale"])),
   subcategory_slug: z.string(), subcategory_name: z.string(), top_category_slug: z.string(), top_category_name: z.string(),
+  offer_id: z.string().uuid().nullable(), offer_name: z.string().nullable(), offer_slug: z.string().nullable(),
+  offer_discount_percent: z.union([z.string(), z.number()]).nullable(), offer_price_cents: z.number().int().nullable(), offer_ends_at: z.string().nullable(),
 });
 
 const categoryRowSchema = z.object({
@@ -61,12 +63,20 @@ type ProductRow = z.infer<typeof productRowSchema>;
 function summaryFromRow(input: unknown): ProductSummaryDTO {
   const row = productRowSchema.parse(input);
   const defaultColor = row.colors.find((color) => color.stockQuantity > 0) ?? row.colors[0];
+  const offer = row.offer_id
+    ? { id: row.offer_id, name: row.offer_name ?? "", slug: row.offer_slug ?? "", discountPercent: row.offer_discount_percent === null ? null : Number(row.offer_discount_percent), endsAt: row.offer_ends_at }
+    : null;
   return {
     id: row.id,
     slug: row.slug,
     name: row.name,
     label: row.label,
-    pricing: { currency: row.currency, listCents: row.base_price_cents, saleCents: row.sale_price_cents, effectiveCents: row.sale_price_cents ?? row.base_price_cents },
+    // saleCents drives the storefront's struck-through-price display (ProductCard.tsx);
+    // an active offer price takes priority over the manual sale price so the whole
+    // storefront picks it up with no component changes. effectiveCents is read
+    // straight from the view's precomputed column rather than re-derived here, so
+    // there is exactly one place (public.offer_price_for in SQL) doing the arithmetic.
+    pricing: { currency: row.currency, listCents: row.base_price_cents, saleCents: row.offer_price_cents ?? row.sale_price_cents, effectiveCents: row.effective_price_cents, offer },
     primaryImage: mediaImageDto({ id: row.media_id, storageKey: row.storage_key, alt: row.alt_text, width: row.width ?? 1, height: row.height ?? 1 }),
     colors: row.colors.map((color) => ({ id: color.id, name: color.name, slug: color.slug, hex: color.hex })),
     defaultVariantId: defaultColor?.variantId ?? null,
@@ -152,7 +162,11 @@ async function fetchProducts(filters: ProductFilters): Promise<ProductListDTO> {
   let query = supabase.from("public_product_cards").select("*", { count: "exact" });
   if (filters.category) query = query.eq("top_category_slug", filters.category);
   if (filters.sub) query = query.eq("subcategory_slug", filters.sub);
-  if (filters.sale) query = query.not("sale_price_cents", "is", null);
+  // A product discounted only by a live offer (no manual sale_price_cents) must
+  // still show up under "Sale" -- otherwise it would display a discount everywhere
+  // except the one filter/link (Header.tsx's "Sale" link) meant to find it.
+  if (filters.sale) query = query.or("sale_price_cents.not.is.null,offer_id.not.is.null");
+  if (filters.offer) query = query.not("offer_id", "is", null);
   if (filters.isNew) query = query.contains("badges", ["new"]);
   if (filters.bestseller) query = query.contains("badges", ["bestseller"]);
   if (filters.color) query = query.contains("color_slugs", [filters.color]);
