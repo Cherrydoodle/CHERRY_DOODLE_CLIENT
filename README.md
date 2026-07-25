@@ -226,3 +226,5 @@ Supabase commands require Docker Desktop. Deploy this directory as the Vercel ro
 URLs and the access-token hook, use separate Cloudinary product environments/credentials per
 environment, restrict cron/payment webhook secrets, and enable Supabase point-in-time recovery plus
 restore drills.
+
+work from ashique and nabeel 
