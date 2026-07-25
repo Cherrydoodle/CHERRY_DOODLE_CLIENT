@@ -89,7 +89,9 @@ class CheckoutError extends Error {
 const STALE_CART_CODES = new Set([
   "INSUFFICIENT_STOCK", "VARIANT_UNAVAILABLE", "PRODUCT_UNAVAILABLE", "MIXED_CURRENCY_CART", "EMPTY_CART",
 ]);
-const STALE_SESSION_CODES = new Set(["CHECKOUT_EXPIRED", "CHECKOUT_NOT_FOUND", "PAYMENT_ORDER_MISMATCH"]);
+// PAYMENT_AUTO_REFUNDED belongs here too: the money has already gone back to the
+// shopper, so the only sensible next step is a brand-new checkout session.
+const STALE_SESSION_CODES = new Set(["CHECKOUT_EXPIRED", "CHECKOUT_NOT_FOUND", "PAYMENT_ORDER_MISMATCH", "PAYMENT_AUTO_REFUNDED"]);
 
 const FRIENDLY_MESSAGES: Record<string, string> = {
   INSUFFICIENT_STOCK: "Some items in your bag just sold out or dropped in stock. We've refreshed your bag — please review it and try again.",
@@ -102,6 +104,9 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   PAYMENT_ORDER_MISMATCH: "That payment session is no longer valid. Please try again.",
   PAYMENT_SIGNATURE_INVALID: "We couldn't verify that payment. If you were charged, please contact support with your order details.",
   PAYMENT_AMOUNT_MISMATCH: "Something looks off with that payment. If you were charged, please contact support.",
+  PAYMENT_AUTO_REFUNDED: "That checkout had already expired, so your payment was refunded in full — it should reach your account in 5-7 working days. Please start a new order.",
+  PAYMENT_NOT_CAPTURED: "Your payment is still being confirmed by your bank. Give it a moment and check your orders — we'll email you as soon as it's through.",
+  PAYMENT_REQUIRES_REVIEW: "Your payment went through and we're finalising your order. We've emailed you the details.",
   ORDER_TOTAL_TOO_LOW: "Your order total is too low for payment. Please add another item to your bag.",
   RATE_LIMITED: "Too many attempts. Please wait a moment and try again.",
   SERVICE_UNAVAILABLE: "Checkout is temporarily unavailable. Please try again in a moment.",
@@ -159,6 +164,38 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
     setSession(null);
     startKey.current = null;
   };
+
+  // Set the moment a payment is known to have succeeded, so nothing downstream
+  // (modal dismissal, page unload) can release the stock that has just been bought.
+  const settled = useRef(false);
+
+  const CANCEL_ENDPOINT = "/api/v1/checkout/razorpay/cancel";
+
+  // Fire-and-forget: hands the reservation back so the shopper can retry straight
+  // away. Idempotent server-side, and never surfaces an error — abandoning a payment
+  // is not a failure the shopper needs to be told about.
+  const releaseCheckout = (checkout: StartCheckout) => {
+    if (settled.current) return;
+    fetch(CANCEL_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ checkoutId: checkout.checkoutId, checkoutToken: checkout.checkoutToken }),
+      keepalive: true,
+    }).catch(() => undefined);
+  };
+
+  // Covers the shopper who simply closes the tab mid-payment. sendBeacon survives
+  // unload where a normal fetch would be cancelled.
+  useEffect(() => {
+    if (!session) return;
+    const handlePageHide = () => {
+      if (settled.current) return;
+      const payload = JSON.stringify({ checkoutId: session.checkoutId, checkoutToken: session.checkoutToken });
+      navigator.sendBeacon?.(CANCEL_ENDPOINT, new Blob([payload], { type: "application/json" }));
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, [session]);
 
   const verifyPayment = async (checkout: StartCheckout, payment: RazorpaySuccess) => {
     const verificationKey = `verify:${payment.razorpay_payment_id}`;
@@ -279,20 +316,35 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
         handler: async (payment) => {
           try {
             await verifyPayment(checkout, payment);
-            await clearCart();
-            goToSuccess(checkout);
           } catch (cause) {
-            if (cause instanceof CheckoutError && cause.code === "PAYMENT_REQUIRES_REVIEW") {
-              await clearCart();
-              goToSuccess(checkout);
+            // PAYMENT_REQUIRES_REVIEW means the money was taken and the order is
+            // being finalised by hand — that is a success from the shopper's side,
+            // so it goes to the confirmation page (which reads the real DB state).
+            if (!(cause instanceof CheckoutError) || cause.code !== "PAYMENT_REQUIRES_REVIEW") {
+              setError(describeCheckoutError(cause));
+              if (cause instanceof CheckoutError && STALE_SESSION_CODES.has(cause.code)) resetSession();
+              setProcessing(false);
               return;
             }
-            setError(describeCheckoutError(cause));
-            if (cause instanceof CheckoutError && STALE_SESSION_CODES.has(cause.code)) resetSession();
-            setProcessing(false);
           }
+          // Past this point the payment has succeeded. Emptying the bag is a
+          // convenience, so it must never be able to turn a completed payment into
+          // an on-screen error — the exact thing that makes shoppers pay twice.
+          settled.current = true;
+          await clearCart().catch(() => undefined);
+          goToSuccess(checkout);
         },
-        modal: { ondismiss: () => setProcessing(false) },
+        modal: {
+          ondismiss: () => {
+            if (settled.current) return;
+            setProcessing(false);
+            // Hand the reserved stock back immediately instead of holding it for the
+            // full 20-minute window, which would otherwise make an instant retry hit
+            // INSUFFICIENT_STOCK against the shopper's own reservation.
+            releaseCheckout(checkout);
+            resetSession();
+          },
+        },
       });
       razorpay.on("payment.failed", (failure) => {
         setError(failure.error?.description || failure.error?.reason || "Payment failed. You can try again.");

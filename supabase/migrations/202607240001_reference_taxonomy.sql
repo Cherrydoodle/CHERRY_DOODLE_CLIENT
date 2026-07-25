@@ -4,15 +4,12 @@
 -- product form cannot work without: categories and colors. No products,
 -- variants, badges, or marketing copy — those are created in the admin panel.
 --
--- Everything else that a fresh database needs (role_permissions, the
--- store_settings singleton, enums, RPCs, RLS) is already inside the
--- migrations, so it lands automatically with `supabase db push`.
+-- Lives in a migration rather than in seed.sql for the same reason
+-- role_permissions (202607140001) and the store_settings singleton
+-- (202607150002) do: it is required data, not demo data, so every environment
+-- must receive it from `supabase db push`. seed.sql stays local-only.
 --
--- Idempotent: safe to run more than once.
---
--- Apply with either
---   psql "$SUPABASE_DB_URL" -f supabase/seed.production.sql
--- or by pasting this file into the Supabase dashboard SQL editor.
+-- Idempotent: every statement upserts, so re-running changes nothing.
 
 -- Top-level categories.
 insert into public.categories (slug, name, emoji, sort_order) values

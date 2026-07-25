@@ -1,6 +1,7 @@
 import posthog from "posthog-js";
 
 import { getPublicAnalyticsConfig } from "@/lib/public-env";
+import { scrubUrl } from "@/lib/security/scrub-url";
 
 const CONSENT_KEY = "cd_cookie_consent";
 
@@ -27,30 +28,10 @@ function shouldTrack(): boolean {
   return Boolean(getPublicAnalyticsConfig()) && getAnalyticsConsent() === "granted";
 }
 
-// Query params that are capability credentials and must never reach PostHog. The
-// checkout success page carries `checkoutToken` in its URL (the RSC needs it to load
-// the confirmation server-side), and PostHog auto-attaches `$current_url`/`$referrer`
-// to every captured event — including our manual `purchase` event — so those URLs are
-// scrubbed here before any event leaves the browser.
-const SENSITIVE_QUERY_PARAMS = ["checkoutToken", "token"];
-
-function scrubUrl(value: unknown): unknown {
-  if (typeof value !== "string" || !value) return value;
-  try {
-    const url = new URL(value);
-    let changed = false;
-    for (const key of SENSITIVE_QUERY_PARAMS) {
-      if (url.searchParams.has(key)) {
-        url.searchParams.set(key, "[redacted]");
-        changed = true;
-      }
-    }
-    return changed ? url.toString() : value;
-  } catch {
-    return value;
-  }
-}
-
+// PostHog auto-attaches `$current_url`/`$referrer` to every captured event —
+// including our manual `purchase` event — so those URLs are scrubbed of capability
+// tokens before anything leaves the browser. The scrubber is shared with the Sentry
+// configs (see lib/security/scrub-url.ts) so the two cannot drift apart.
 const URL_PROPERTY_KEYS = ["$current_url", "$referrer", "$initial_current_url", "$initial_referrer"];
 
 export function initPosthogClient() {

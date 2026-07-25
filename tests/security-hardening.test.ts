@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { assertSameOrigin } from "@/lib/http/request";
 import { enforceRateLimit } from "@/lib/http/rate-limit";
+import { handleRoute } from "@/lib/http/route";
 
 const originalEnv = { ...process.env };
 
@@ -62,6 +63,43 @@ describe("enforceRateLimit (RZ-090: reset-password rate limiting)", () => {
     // A different subject under the same scope is not affected by user-a's usage.
     await expect(enforceRateLimit({ scope, subject: "user-b", limit: 1, windowSeconds: 3600 })).resolves.toBeUndefined();
     await expect(enforceRateLimit({ scope, subject: "user-a", limit: 1, windowSeconds: 3600 })).rejects.toMatchObject({ status: 429 });
+  });
+
+  // RZ-AUDIT L-5: a 429 with no Retry-After leaves the client guessing, and a
+  // guessing client retries immediately — which is what caused the throttle.
+  it("tells a throttled caller when to retry, and surfaces it as a Retry-After header", async () => {
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    const subject = `retry-after-${crypto.randomUUID()}`;
+
+    await enforceRateLimit({ scope: "retry-after", subject, limit: 1, windowSeconds: 600 });
+    await expect(enforceRateLimit({ scope: "retry-after", subject, limit: 1, windowSeconds: 600 }))
+      .rejects.toMatchObject({ status: 429, retryAfterSeconds: expect.any(Number) });
+
+    const response = await handleRoute(
+      new Request("https://cherrydoodle.in/api/v1/anything", { method: "POST" }),
+      async () => {
+        await enforceRateLimit({ scope: "retry-after", subject, limit: 1, windowSeconds: 600 });
+        return new Response("unreachable");
+      },
+    );
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get("retry-after"))).toBeGreaterThan(0);
+  });
+});
+
+// RZ-AUDIT L-3: the request id is the trail an incident is reconstructed from. A
+// client-chosen value lets any user collide with another request's id in the logs.
+describe("request id is never adopted from the caller", () => {
+  it("ignores a client-supplied x-request-id and issues its own", async () => {
+    const supplied = "11111111-2222-4333-8444-555555555555";
+    const response = await handleRoute(
+      new Request("https://cherrydoodle.in/api/v1/anything", { method: "GET", headers: { "x-request-id": supplied } }),
+      async ({ requestId }) => new Response(requestId),
+    );
+    const issued = response.headers.get("x-request-id");
+    expect(issued).not.toBe(supplied);
+    expect(issued).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   });
 });
 

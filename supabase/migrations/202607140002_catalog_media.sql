@@ -249,7 +249,10 @@ create unique index if not exists product_media_position_idx on public.product_m
 create index if not exists product_media_asset_idx on public.product_media(media_asset_id);
 create unique index if not exists product_reviews_one_per_user_idx on public.product_reviews(product_id, user_id) where deleted_at is null;
 create index if not exists products_search_idx on public.products using gin(search_document);
-create index if not exists products_name_trgm_idx on public.products using gin(lower(name) gin_trgm_ops);
+-- Schema-qualified: pg_trgm lives in the `extensions` schema, which is not on the
+-- search_path of the role the Supabase CLI uses to apply migrations to a hosted
+-- project. Unqualified `gin_trgm_ops` fails there with SQLSTATE 42704.
+create index if not exists products_name_trgm_idx on public.products using gin(lower(name) extensions.gin_trgm_ops);
 create index if not exists products_public_newest_idx on public.products(published_at desc, id) where status = 'published' and deleted_at is null;
 create index if not exists products_public_price_idx on public.products(base_price_cents, id) where status = 'published' and deleted_at is null;
 create index if not exists products_public_rating_idx on public.products(aggregate_rating desc, id) where status = 'published' and deleted_at is null;

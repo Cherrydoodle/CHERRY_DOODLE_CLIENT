@@ -38,7 +38,11 @@ export function verifyRazorpayPaymentSignature(orderId: string, paymentId: strin
   return secureHexEqual(expected, signature);
 }
 
-export function verifyRazorpayWebhookSignature(rawBody: string, signature: string | null, secret: string) {
+// Takes the raw bytes, not a decoded string: decoding first would replace any byte
+// sequence that is not valid UTF-8 with U+FFFD, and the HMAC would then be computed
+// over something Razorpay never sent. Signature verification must see exactly the
+// bytes that arrived.
+export function verifyRazorpayWebhookSignature(rawBody: Uint8Array, signature: string | null, secret: string) {
   if (!signature) return false;
   const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   return secureHexEqual(expected, signature);
@@ -52,22 +56,41 @@ function providerHeaders() {
   };
 }
 
-async function providerRequest<T>(path: string, init: RequestInit): Promise<T> {
+const DEFAULT_TIMEOUT_MS = 12_000;
+
+// Razorpay expects a webhook to be acknowledged within about five seconds, and this
+// call happens inline while the webhook request is still open. A 12s budget could
+// therefore blow the delivery deadline on its own, producing retry storms and
+// eventually a disabled endpoint. Interactive requests keep the longer budget.
+export const WEBHOOK_TIMEOUT_MS = 3_500;
+
+type ProviderOptions = { timeoutMs?: number };
+
+async function providerRequest<T>(path: string, init: RequestInit, options: ProviderOptions = {}): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
       headers: { ...providerHeaders(), ...init.headers },
       cache: "no-store",
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
     });
   } catch {
     throw new ApiError(502, "PAYMENT_PROVIDER_UNAVAILABLE", "Razorpay could not be reached. Please try again.");
   }
   const body = await response.json().catch(() => null) as { error?: { description?: string } } | null;
   if (!response.ok) {
-    const detail = body?.error?.description?.slice(0, 300) || "Razorpay rejected the payment request.";
-    throw new ApiError(502, "PAYMENT_PROVIDER_ERROR", detail);
+    // Razorpay's own wording is kept for the server log and the ApiError `cause`,
+    // but never handed to the client: it is provider-internal text we do not
+    // control, and it has leaked implementation detail into customer-facing copy.
+    const detail = body?.error?.description?.slice(0, 300) || "no description";
+    throw new ApiError(
+      502,
+      "PAYMENT_PROVIDER_ERROR",
+      "The payment provider rejected this request. Please try again.",
+      undefined,
+      { cause: new Error(`Razorpay ${response.status}: ${detail}`) },
+    );
   }
   return body as T;
 }
@@ -75,16 +98,16 @@ async function providerRequest<T>(path: string, init: RequestInit): Promise<T> {
 export async function createRazorpayOrder(input: { amount: number; currency: string; receipt: string; checkoutId: string }) {
   const order = await providerRequest<RazorpayOrder>("/orders", {
     method: "POST",
+    // Only documented Create-Order parameters are sent. A `payment_capture: 1` field
+    // used to be passed here with a comment claiming it forced auto-capture; it is
+    // not part of the current Orders API (amount, currency, receipt, notes,
+    // partial_payment, first_payment_min_amount), so it guaranteed nothing. Capture
+    // is now handled explicitly instead — see captureRazorpayPayment below and
+    // finalizeCapturedPayment in ./service.ts.
     body: JSON.stringify({
       amount: input.amount,
       currency: input.currency,
       receipt: input.receipt,
-      // Force auto-capture instead of inheriting the dashboard's capture setting.
-      // Without this, a merchant account left on manual/two-step capture would leave
-      // payments in `authorized` state, `finalizeCapturedPayment` would reject them
-      // as PAYMENT_NOT_CAPTURED indefinitely, and funds would sit uncaptured with no
-      // order ever created.
-      payment_capture: 1,
       notes: { checkout_id: input.checkoutId },
     }),
   });
@@ -94,8 +117,26 @@ export async function createRazorpayOrder(input: { amount: number; currency: str
   return order;
 }
 
-export async function fetchRazorpayPayment(paymentId: string) {
-  return providerRequest<RazorpayPayment>(`/payments/${encodeURIComponent(paymentId)}`, { method: "GET" });
+export async function fetchRazorpayPayment(paymentId: string, options: { timeoutMs?: number } = {}) {
+  return providerRequest<RazorpayPayment>(`/payments/${encodeURIComponent(paymentId)}`, { method: "GET" }, options);
+}
+
+/**
+ * Captures an authorized payment. Razorpay requires the captured amount and
+ * currency to equal the authorized ones, so the caller passes the values it has
+ * already validated against the checkout session.
+ *
+ * Auto-capture is an account-level Dashboard setting, not something the Orders API
+ * can force. Without this call, an account with auto-capture off would leave every
+ * payment `authorized`, no order would ever be created, and Razorpay would auto-
+ * refund the customer after its holding period — a silent, total revenue outage.
+ * Calling capture explicitly makes the outcome independent of that setting.
+ */
+export async function captureRazorpayPayment(paymentId: string, amount: number, currency: string) {
+  return providerRequest<RazorpayPayment>(`/payments/${encodeURIComponent(paymentId)}/capture`, {
+    method: "POST",
+    body: JSON.stringify({ amount, currency }),
+  });
 }
 
 // Used only by the reconciliation sync (RZ-050) to recover a checkout whose
@@ -134,6 +175,15 @@ export function getRazorpaySecret() {
   return requireRazorpayConfig().keySecret;
 }
 
-export function validateRazorpayWebhook(rawBody: string, signature: string | null) {
-  return verifyRazorpayWebhookSignature(rawBody, signature, requireRazorpayWebhookSecret());
+/**
+ * Verifies a webhook against the current secret and, when configured, the previous
+ * one. Rotating `RAZORPAY_WEBHOOK_SECRET` is otherwise a lossy operation: deliveries
+ * signed with the old secret between the dashboard change and the deploy are
+ * rejected outright, and Razorpay eventually gives up retrying them. Set
+ * `RAZORPAY_WEBHOOK_SECRET_PREVIOUS` for the overlap window, then remove it.
+ */
+export function validateRazorpayWebhook(rawBody: Uint8Array, signature: string | null) {
+  const { current, previous } = requireRazorpayWebhookSecret();
+  if (verifyRazorpayWebhookSignature(rawBody, signature, current)) return true;
+  return previous ? verifyRazorpayWebhookSignature(rawBody, signature, previous) : false;
 }

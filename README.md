@@ -146,10 +146,35 @@ URL:
 https://your-public-store-host/api/v1/webhooks/razorpay
 ```
 
-Subscribe to `payment.captured`, `payment.failed`, and `order.paid`. Keep `RAZORPAY_MODE=test`; the
-backend rejects a live key in test mode. Enable automatic capture because fulfillment begins only
-after Razorpay reports `captured`. The catalog operates in INR (Razorpay-India); prices, store
-settings, shipping thresholds, and structured data are all INR.
+Subscribe to **all** of these events — the backend handles each one, and omitting any of them leaves
+a recovery path dead:
+
+| Event | Why it is needed |
+|---|---|
+| `payment.captured` | Primary path: creates the order. |
+| `payment.authorized` | Captures explicitly when the account's auto-capture is off. Without it, uncaptured payments are auto-refunded by Razorpay days later. |
+| `order.paid` | Redundant confirmation of a completed order. |
+| `payment.failed` | Records the failed attempt (and frees stock once the reservation window closes). |
+| `refund.processed`, `refund.failed` | Resolves refunds left `pending` by the Refunds API. |
+| `payment.dispute.created`, `payment.dispute.won`, `payment.dispute.lost`, `payment.dispute.closed` | Chargebacks; each raises an alert. |
+
+To rotate `RAZORPAY_WEBHOOK_SECRET` without dropping in-flight deliveries: set
+`RAZORPAY_WEBHOOK_SECRET_PREVIOUS` to the old value and deploy, change the secret in the Razorpay
+dashboard, then remove `RAZORPAY_WEBHOOK_SECRET_PREVIOUS` and deploy again. Both secrets are accepted
+during the overlap.
+
+Keep `RAZORPAY_MODE=test`; the backend rejects a live key in test mode. Automatic capture should also
+be enabled in the Dashboard, but the backend no longer depends on it — `payment.authorized` triggers
+an explicit capture call. The catalog operates in INR (Razorpay-India); prices, store settings,
+shipping thresholds, and structured data are all INR.
+
+## Transactional email (Resend)
+
+Verify the domain `cherrydoodle.in` in the Resend dashboard (add its SPF and DKIM DNS records) and
+set `RESEND_API_KEY` plus `EMAIL_FROM_ADDRESS`. All mail goes through the `email_outbox` table:
+writers only insert rows, and `POST /api/internal/jobs/email-dispatch` delivers them with retry and
+backoff. The order confirmation is inserted by `complete_razorpay_checkout` inside the same
+transaction as the order, so an order can never exist without its confirmation being queued.
 
 ## API and scheduled jobs
 
@@ -158,14 +183,21 @@ settings, shipping thresholds, and structured data are all INR.
 - Cart/wishlist: `/api/v1/cart/*`, `/api/v1/wishlist/*`
 - Admin: `/api/v1/admin/*`
 - Checkout: `/api/v1/checkout/razorpay/order`, `/api/v1/checkout/razorpay/verify`,
-  `/api/v1/webhooks/razorpay`
+  `/api/v1/checkout/razorpay/cancel`, `/api/v1/webhooks/razorpay`
 - Internal: `/api/internal/health`, `/api/internal/jobs/*`
 
-Call scheduled jobs with `Authorization: Bearer <CRON_SECRET>`:
+Scheduled jobs are declared in `vercel.json` and authorized with
+`Authorization: Bearer <CRON_SECRET>` (Vercel adds this header automatically when `CRON_SECRET` is
+set on the project). Both `GET` and `POST` are accepted. On any other platform, schedule the same
+four paths at the same cadence — **`checkout-cleanup` and `payment-reconciliation` are not optional**;
+they are the only automated recovery for a checkout whose webhook and client callback were both lost.
 
-- `POST /api/internal/jobs/email-dispatch` every minute
-- `POST /api/internal/jobs/media-cleanup` every 10-15 minutes
-- `POST /api/internal/jobs/checkout-cleanup` every 5 minutes
+| Job | Schedule | Purpose |
+|---|---|---|
+| `/api/internal/jobs/email-dispatch` | every minute | Delivers the `email_outbox` queue via Resend |
+| `/api/internal/jobs/checkout-cleanup` | every 5 minutes | Expires lapsed reservations |
+| `/api/internal/jobs/payment-reconciliation` | every 15 minutes | Recovers captures whose webhook *and* callback were lost |
+| `/api/internal/jobs/media-cleanup` | every 15 minutes | Removes orphaned media |
 
 ## Scripts
 

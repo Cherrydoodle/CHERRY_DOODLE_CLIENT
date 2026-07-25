@@ -386,17 +386,27 @@ export async function getHome(): Promise<HomeDTO> {
 // cannot use the cookie-based client. These use the service-role client instead and
 // return slugs only — never used to render page content.
 export async function listAllProductSlugs(): Promise<string[]> {
-  if (!getPublicSupabaseConfig()) return staticListProducts({ sort: "featured", limit: 1000 }).items.map((item) => item.slug);
-  const admin = createAdminSupabaseClient();
-  const { data, error } = await admin.from("products").select("slug").eq("status", "published").is("deleted_at", null);
-  if (error) throw catalogUnavailable("listAllProductSlugs", "Product slugs could not be loaded.", error);
-  return (data ?? []).map((row) => row.slug as string);
+  if (!getPublicSupabaseConfig()) return [];
+  try {
+    const admin = createAdminSupabaseClient();
+    const { data, error } = await admin.from("products").select("slug").eq("status", "published").is("deleted_at", null);
+    if (error) throw error;
+    return (data ?? []).map((row) => row.slug as string);
+  } catch (err) {
+    logger.warn("listAllProductSlugs: Supabase query failed at build time, skipping static generation (pages will be ISR'd on first request)", { error: String(err) });
+    return [];
+  }
 }
 
 export async function listAllCategorySlugs(): Promise<string[]> {
-  if (!getPublicSupabaseConfig()) return staticCategories().map((category) => category.slug);
-  const admin = createAdminSupabaseClient();
-  const { data, error } = await admin.from("categories").select("slug").is("parent_id", null).eq("is_active", true).is("deleted_at", null);
-  if (error) throw catalogUnavailable("listAllCategorySlugs", "Category slugs could not be loaded.", error);
-  return (data ?? []).map((row) => row.slug as string);
+  if (!getPublicSupabaseConfig()) return [];
+  try {
+    const admin = createAdminSupabaseClient();
+    const { data, error } = await admin.from("categories").select("slug").is("parent_id", null).eq("is_active", true).is("deleted_at", null);
+    if (error) throw error;
+    return (data ?? []).map((row) => row.slug as string);
+  } catch (err) {
+    logger.warn("listAllCategorySlugs: Supabase query failed at build time, skipping static generation (pages will be ISR'd on first request)", { error: String(err) });
+    return [];
+  }
 }

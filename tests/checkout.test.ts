@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { checkoutConfirmationSchema, checkoutStartSchema, checkoutVerifySchema, razorpayWebhookSchema } from "@/features/checkout/schemas";
 import { verifyRazorpayPaymentSignature, verifyRazorpayWebhookSignature } from "@/features/checkout/razorpay";
@@ -174,7 +174,66 @@ describe("Razorpay signatures", () => {
   it("verifies webhooks against the unmodified raw body", () => {
     const raw = JSON.stringify({ event: "payment.captured", payload: { payment: { entity: { id: "pay_Def456" } } } });
     const signature = createHmac("sha256", secret).update(raw).digest("hex");
-    expect(verifyRazorpayWebhookSignature(raw, signature, secret)).toBe(true);
-    expect(verifyRazorpayWebhookSignature(`${raw}\n`, signature, secret)).toBe(false);
+    expect(verifyRazorpayWebhookSignature(Buffer.from(raw, "utf8"), signature, secret)).toBe(true);
+    expect(verifyRazorpayWebhookSignature(Buffer.from(`${raw}\n`, "utf8"), signature, secret)).toBe(false);
+  });
+
+  // RZ-AUDIT L-7: the dashboard change and the deploy cannot be simultaneous, so
+  // without an overlap window every delivery signed with the old secret in between is
+  // rejected and eventually abandoned by Razorpay.
+  describe("webhook secret rotation", () => {
+    const CURRENT = "current_webhook_secret_for_unit_tests";
+    const PREVIOUS = "previous_webhook_secret_for_unit_tests";
+    const body = Buffer.from(JSON.stringify({ event: "payment.captured" }), "utf8");
+    const originalEnv = { ...process.env };
+
+    afterEach(() => {
+      process.env = { ...originalEnv };
+    });
+
+    function sign(secret: string) {
+      return createHmac("sha256", secret).update(body).digest("hex");
+    }
+
+    it("accepts a body signed with either the current or the previous secret", async () => {
+      process.env.RAZORPAY_WEBHOOK_SECRET = CURRENT;
+      process.env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS = PREVIOUS;
+      const { validateRazorpayWebhook } = await import("@/features/checkout/razorpay");
+
+      expect(validateRazorpayWebhook(body, sign(CURRENT))).toBe(true);
+      expect(validateRazorpayWebhook(body, sign(PREVIOUS))).toBe(true);
+      expect(validateRazorpayWebhook(body, sign("some_third_secret_entirely"))).toBe(false);
+    });
+
+    it("rejects the previous secret once it is removed", async () => {
+      process.env.RAZORPAY_WEBHOOK_SECRET = CURRENT;
+      delete process.env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS;
+      const { validateRazorpayWebhook } = await import("@/features/checkout/razorpay");
+
+      expect(validateRazorpayWebhook(body, sign(CURRENT))).toBe(true);
+      expect(validateRazorpayWebhook(body, sign(PREVIOUS))).toBe(false);
+    });
+
+    it("refuses a configuration where the two secrets are identical", async () => {
+      process.env.RAZORPAY_WEBHOOK_SECRET = CURRENT;
+      process.env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS = CURRENT;
+      const { validateRazorpayWebhook } = await import("@/features/checkout/razorpay");
+
+      expect(() => validateRazorpayWebhook(body, sign(CURRENT))).toThrow(/RAZORPAY_WEBHOOK_SECRET_PREVIOUS/);
+    });
+  });
+
+  // The verifier takes bytes, not a string, precisely so this case cannot arise:
+  // decoding first would turn an invalid UTF-8 sequence into U+FFFD and hash
+  // something the sender never transmitted.
+  it("hashes the exact bytes received rather than a lossy UTF-8 decoding", () => {
+    const invalidUtf8 = Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0x22, 0xff, 0xfe, 0x22, 0x7d]);
+    const signature = createHmac("sha256", secret).update(invalidUtf8).digest("hex");
+    expect(verifyRazorpayWebhookSignature(invalidUtf8, signature, secret)).toBe(true);
+
+    // What the old string-based path would have hashed instead.
+    const lossy = Buffer.from(new TextDecoder().decode(invalidUtf8), "utf8");
+    expect(lossy.equals(invalidUtf8)).toBe(false);
+    expect(verifyRazorpayWebhookSignature(lossy, signature, secret)).toBe(false);
   });
 });
