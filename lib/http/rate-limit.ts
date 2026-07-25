@@ -12,6 +12,17 @@ function subjectKey(options: LimitOptions) {
   return createHash("sha256").update(`${options.scope}:${options.subject}`).digest("hex");
 }
 
+// Seconds until the current fixed window rolls over, so a throttled caller is told
+// exactly when to retry rather than guessing (and hammering the endpoint meanwhile).
+function secondsUntilWindowReset(windowSeconds: number, now = Date.now()) {
+  const windowMs = windowSeconds * 1000;
+  return Math.max(1, Math.ceil((windowMs - (now % windowMs)) / 1000));
+}
+
+function throttled(retryAfterSeconds: number) {
+  return new ApiError(429, "RATE_LIMITED", "Too many requests. Try again later.", undefined, { retryAfterSeconds });
+}
+
 export async function enforceRateLimit(options: LimitOptions) {
   const key = subjectKey(options);
   const url = process.env.UPSTASH_REDIS_REST_URL?.replace(/\/$/, "");
@@ -29,7 +40,7 @@ export async function enforceRateLimit(options: LimitOptions) {
     });
     if (!response.ok) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Rate limiting is temporarily unavailable.");
     const result = (await response.json()) as Array<{ result?: number }>;
-    if ((result[0]?.result ?? 0) > options.limit) throw new ApiError(429, "RATE_LIMITED", "Too many requests. Try again later.");
+    if ((result[0]?.result ?? 0) > options.limit) throw throttled(secondsUntilWindowReset(options.windowSeconds));
     return;
   }
 
@@ -39,5 +50,5 @@ export async function enforceRateLimit(options: LimitOptions) {
   const window = !existing || existing.resetAt <= now ? { count: 0, resetAt: now + options.windowSeconds * 1000 } : existing;
   window.count += 1;
   localWindows.set(key, window);
-  if (window.count > options.limit) throw new ApiError(429, "RATE_LIMITED", "Too many requests. Try again later.");
+  if (window.count > options.limit) throw throttled(Math.max(1, Math.ceil((window.resetAt - now) / 1000)));
 }

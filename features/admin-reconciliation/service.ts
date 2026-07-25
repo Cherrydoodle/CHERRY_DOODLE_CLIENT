@@ -180,17 +180,23 @@ export async function runPaymentReconciliationSync(limit = 25) {
   for (const session of stuckSessions ?? []) {
     try {
       const payments = await fetchRazorpayOrderPayments(session.razorpay_order_id as string);
-      const captured = payments.items.find((item) => item.status === "captured" && item.captured);
-      if (!captured) {
+      // `authorized` counts as recoverable money, not as "still pending": the
+      // account's auto-capture may be off, in which case finalizeCapturedPayment
+      // captures the payment itself. Ignoring it here would leave the funds to be
+      // auto-refunded by Razorpay days later with nothing recorded on our side.
+      const recoverable =
+        payments.items.find((item) => item.status === "captured" && item.captured) ??
+        payments.items.find((item) => item.status === "authorized");
+      if (!recoverable) {
         stillPending += 1;
         continue;
       }
-      await finalizeCapturedPayment(session as CheckoutRecord, captured);
+      await finalizeCapturedPayment(session as CheckoutRecord, recoverable);
       recovered += 1;
     } catch (caught) {
-      // A PAYMENT_REQUIRES_REVIEW outcome is itself a recovery: the payment moved
-      // from "silently lost" to "flagged in the review queue" above.
-      if (caught instanceof ApiError && caught.code === "PAYMENT_REQUIRES_REVIEW") {
+      // Both of these are recoveries, not failures: the payment moved from
+      // "silently lost" to either a flagged review item or a completed refund.
+      if (caught instanceof ApiError && (caught.code === "PAYMENT_REQUIRES_REVIEW" || caught.code === "PAYMENT_AUTO_REFUNDED")) {
         recovered += 1;
         continue;
       }

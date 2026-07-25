@@ -6,15 +6,22 @@ export class ApiError extends Error {
   // `options.cause` carries the underlying failure (a PostgrestError, a network
   // error) for logs, Sentry, and Node's error inspector, which prints the cause
   // chain. toProblem below never reads it, so nothing here reaches the client.
+  //
+  // `retryAfterSeconds` is surfaced as a Retry-After response header by
+  // lib/http/route.ts, so a throttled client is told when to come back instead of
+  // having to guess (and hammering the endpoint while it guesses).
+  public retryAfterSeconds?: number;
+
   constructor(
     public readonly status: number,
     public readonly code: string,
     message: string,
     public readonly errors?: Array<{ path: string; message: string }>,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { retryAfterSeconds?: number },
   ) {
     super(message, options);
     this.name = "ApiError";
+    this.retryAfterSeconds = options?.retryAfterSeconds;
   }
 }
 
@@ -38,6 +45,7 @@ export function toProblem(error: unknown, request: Request, requestId: string) {
   if (error instanceof ApiError) {
     return {
       status: error.status,
+      retryAfterSeconds: error.retryAfterSeconds,
       body: {
         type: `https://cherrydoodle.example/problems/${error.code.toLowerCase().replaceAll("_", "-")}`,
         title: error.message,

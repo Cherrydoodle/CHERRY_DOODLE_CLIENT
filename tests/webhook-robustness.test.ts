@@ -50,6 +50,7 @@ vi.mock("@/features/checkout/razorpay", () => ({
   getRazorpayPublicConfig: vi.fn(),
   getRazorpaySecret: vi.fn(),
   verifyRazorpayPaymentSignature: vi.fn(),
+  WEBHOOK_TIMEOUT_MS: 3_500,
 }));
 
 const processRefundWebhookEventMock = vi.fn();
@@ -59,7 +60,17 @@ vi.mock("@/features/refunds/service", () => ({
 
 const { processRazorpayWebhook } = await import("@/features/checkout/service");
 
-const SESSION_ROW = { id: "session-1", razorpay_order_id: "order_Abc123", status: "payment_pending" };
+const EXPIRED_AT = new Date(Date.now() - 60_000).toISOString();
+const OPEN_UNTIL = new Date(Date.now() + 10 * 60_000).toISOString();
+
+// Default: the reservation window has already closed, which is the state in which a
+// payment.failed event is genuinely terminal for the checkout.
+const SESSION_ROW = {
+  id: "session-1",
+  razorpay_order_id: "order_Abc123",
+  status: "payment_pending",
+  reservation_expires_at: EXPIRED_AT,
+};
 
 function paymentFailedBody() {
   return JSON.stringify({
@@ -106,7 +117,7 @@ describe("webhook dedup vs. reprocessing", () => {
       return { data: null, error: null };
     };
     const result = await processRazorpayWebhook(refundProcessedBody(), "evt-1", "req-1");
-    expect(result).toEqual({ received: true, duplicate: false });
+    expect(result).toMatchObject({ received: true, duplicate: false });
     expect(processRefundWebhookEventMock).toHaveBeenCalledTimes(1);
     const finalUpdate = allCalls.find((c) => c.table === "webhook_events" && c.method === "update");
     expect((finalUpdate?.args[0] as { attempts: number; status: string })).toMatchObject({ attempts: 1, status: "processed" });
@@ -118,7 +129,7 @@ describe("webhook dedup vs. reprocessing", () => {
       return { data: { status: "processed", attempts: 1 }, error: null }; // the conflict-resolution lookup
     };
     const result = await processRazorpayWebhook(refundProcessedBody(), "evt-2", "req-2");
-    expect(result).toEqual({ received: true, duplicate: true });
+    expect(result).toMatchObject({ received: true, duplicate: true });
     expect(processRefundWebhookEventMock).not.toHaveBeenCalled();
     expect(allCalls.some((c) => c.table === "webhook_events" && c.method === "update")).toBe(false);
   });
@@ -129,7 +140,7 @@ describe("webhook dedup vs. reprocessing", () => {
       return { data: { status: "failed", attempts: 1 }, error: null };
     };
     const result = await processRazorpayWebhook(refundProcessedBody(), "evt-3", "req-3");
-    expect(result).toEqual({ received: true, duplicate: false });
+    expect(result).toMatchObject({ received: true, duplicate: false });
     expect(processRefundWebhookEventMock).toHaveBeenCalledTimes(1);
     const finalUpdate = allCalls.find((c) => c.table === "webhook_events" && c.method === "update");
     expect((finalUpdate?.args[0] as { attempts: number; status: string })).toMatchObject({ attempts: 2, status: "processed" });
@@ -146,12 +157,28 @@ describe("webhook dedup vs. reprocessing", () => {
   });
 });
 
-describe("payment.failed releases reserved inventory (H7)", () => {
-  it("releases the checkout session's reservation", async () => {
+describe("payment.failed inventory handling", () => {
+  it("releases the reservation once the reservation window has closed (H7)", async () => {
     tableHandlers.webhook_events = () => ({ data: null, error: null });
     await processRazorpayWebhook(paymentFailedBody(), "evt-5", "req-5");
     const release = rpcCalls.find((c) => c.name === "release_checkout_inventory");
     expect(release?.args).toEqual({ p_checkout_session_id: "session-1", p_target_status: "failed" });
+  });
+
+  // RZ-AUDIT H-1. Razorpay Checkout lets the shopper retry in the same modal against
+  // the same razorpay_order_id after a decline. Releasing the stock and failing the
+  // session on the first attempt's webhook made that successful retry uncompletable,
+  // so the money was captured and no order was ever created.
+  it("keeps the checkout payable while the reservation window is still open", async () => {
+    tableHandlers.webhook_events = () => ({ data: null, error: null });
+    tableHandlers.checkout_sessions = () => ({ data: { ...SESSION_ROW, reservation_expires_at: OPEN_UNTIL }, error: null });
+
+    await processRazorpayWebhook(paymentFailedBody(), "evt-5b", "req-5b");
+
+    expect(rpcCalls.some((c) => c.name === "release_checkout_inventory")).toBe(false);
+    // The attempt is still recorded — only the terminal transition is deferred.
+    const upsert = allCalls.find((c) => c.table === "payment_attempts" && c.method === "upsert");
+    expect((upsert?.args[0] as { status: string }).status).toBe("failed");
   });
 
   it("does not downgrade a payment_attempts row already recorded as captured (out-of-order webhook)", async () => {

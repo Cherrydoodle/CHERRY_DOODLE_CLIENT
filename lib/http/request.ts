@@ -11,14 +11,14 @@ export const MAX_BODY_BYTES = 1_000_000;
 // cannot make us buffer an unbounded body. Returns the raw text; callers that need
 // JSON parse it themselves. The `content-length` fast-path below still rejects
 // oversized bodies before a single byte is read when the header is present and honest.
-export async function readLimitedText(request: Request, maxBytes = MAX_BODY_BYTES): Promise<string> {
+export async function readLimitedBytes(request: Request, maxBytes = MAX_BODY_BYTES): Promise<Uint8Array> {
   const declaredLength = Number(request.headers.get("content-length") ?? 0);
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     throw new ApiError(413, "PAYLOAD_TOO_LARGE", "Request body is too large.");
   }
 
   const body = request.body;
-  if (!body) return "";
+  if (!body) return new Uint8Array(0);
 
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
@@ -45,7 +45,14 @@ export async function readLimitedText(request: Request, maxBytes = MAX_BODY_BYTE
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder().decode(merged);
+  return merged;
+}
+
+// Convenience wrapper for callers that only want text. Anything doing signature
+// verification must use readLimitedBytes instead: decoding replaces invalid UTF-8
+// with U+FFFD, which would change the bytes an HMAC is computed over.
+export async function readLimitedText(request: Request, maxBytes = MAX_BODY_BYTES): Promise<string> {
+  return new TextDecoder().decode(await readLimitedBytes(request, maxBytes));
 }
 
 export async function readJson<TSchema extends z.ZodType>(request: Request, schema: TSchema): Promise<z.output<TSchema>> {

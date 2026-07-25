@@ -14,7 +14,7 @@ Run everything from `cherry-doodle-next/`.
 |---|---|---|
 | Schema | tables, enums, indexes, RLS policies, views, RPCs, triggers | `supabase db push` |
 | Required rows | `role_permissions` (RBAC grid), `store_settings` singleton (Cherry Doodle identity, INR, Ramanattukara address, Instagram URL) | inside the migrations — automatic |
-| Reference rows | `categories` (5 parents + 18 children), `colors` (6) | `supabase/seed.production.sql` — manual, one command |
+| Reference rows | `categories` (5 parents + 18 children), `colors` (6) | migration `202607240001_reference_taxonomy.sql` — automatic |
 | Admin account | `admin@cherrydoodle.com` in `auth.users` + `profiles` + `user_roles` | `npm run bootstrap:admin` |
 | **Demo data** | 12 draft products, variants, SKUs, badges, hero/sale banner copy | **`supabase/seed.sql` — not applied** |
 
@@ -49,8 +49,8 @@ npx supabase db push
 npx supabase migration list
 ```
 
-`migration list` must show all 20 versions present both locally and remotely
-(`202607140001` … `202607230001`). The migrations are written defensively
+`migration list` must show all 21 versions present both locally and remotely
+(`202607140001` … `202607240001`). The migrations are written defensively
 (`create table if not exists`, `on conflict do nothing`, guarded `update`s), so re-running against a
 partially-migrated project is safe.
 
@@ -63,19 +63,14 @@ npx supabase db push --db-url "postgresql://postgres.<ref>:<db-password>@aws-1-<
 > **Never run `npx supabase db reset` against a hosted project.** It drops the schema *and* applies
 > `seed.sql`, which is exactly the demo catalog you want to avoid.
 
-## 3. Apply the minimal reference seed
+## 3. Reference data — nothing to do
 
-Either from a shell:
+The taxonomy (23 categories, 6 colors) ships as migration
+`202607240001_reference_taxonomy.sql`, so step 2 already inserted it. It is required data, not demo
+data: the product form cannot save a variant without at least one color. Every statement upserts, so
+re-running is a no-op.
 
-```powershell
-psql "$env:SUPABASE_DB_URL" -f supabase/seed.production.sql
-```
-
-…or paste `supabase/seed.production.sql` into the Supabase dashboard **SQL Editor** and run it.
-It inserts categories and colors only, and is idempotent.
-
-Skip it only if you plan to create every category and color by hand in the admin panel — but note
-that the product form cannot save a variant without at least one color.
+To change the taxonomy later, edit it in the admin panel — do not edit that migration.
 
 ## 4. Configure Auth in the dashboard
 
@@ -156,6 +151,10 @@ select role, count(*) from public.role_permissions group by role order by role;
 -- reference data present
 select (select count(*) from public.categories) as categories,
        (select count(*) from public.colors) as colors;   -- expect 23 and 6
+
+-- extension objects must stay schema-qualified (`extensions.gin_trgm_ops`, `extensions.citext`);
+-- the role that applies migrations to a hosted project does not have `extensions` on its
+-- search_path, so an unqualified reference fails with SQLSTATE 42704.
 
 -- no demo data
 select (select count(*) from public.products) as products,

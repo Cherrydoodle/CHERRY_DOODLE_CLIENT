@@ -32,6 +32,10 @@ function configureValidEnv() {
     RAZORPAY_KEY_ID: "rzp_test_ABCDEF1234567890",
     RAZORPAY_KEY_SECRET: SECRET_D,
     RAZORPAY_WEBHOOK_SECRET: SECRET_E,
+    RESEND_API_KEY: `re_${SECRET_A}`,
+    EMAIL_FROM_ADDRESS: "Cherry Doodle <orders@cherrydoodle.in>",
+    CHECKOUT_FREE_SHIPPING_THRESHOLD_MINOR: "299900",
+    CHECKOUT_FLAT_SHIPPING_MINOR: "4900",
     GUEST_CART_TOKEN_PEPPER: SECRET_A,
     APP_HMAC_SECRET: SECRET_B,
     CRON_SECRET: SECRET_C,
@@ -75,6 +79,35 @@ describe("assertServerEnv", () => {
     configureValidEnv();
     process.env.APP_HMAC_SECRET = "tooshort";
     expect(() => assertServerEnv({ production: true })).toThrow(/APP_HMAC_SECRET/);
+  });
+
+  // The shipping values are money. They previously had hardcoded in-code fallbacks
+  // (Rs 35 / Rs 5) that disagreed with the documented values by ~60x, so an
+  // environment that simply omitted them shipped almost every order free, silently.
+  it("requires the checkout shipping values in production", () => {
+    configureValidEnv();
+    delete process.env.CHECKOUT_FLAT_SHIPPING_MINOR;
+    expect(() => assertServerEnv({ production: true })).toThrow(/CHECKOUT_FLAT_SHIPPING_MINOR/);
+  });
+
+  // These are minor units (paise), so a fractional value means someone entered
+  // rupees by mistake — exactly the confusion that makes shipping charges wrong.
+  it("rejects a non-integer shipping value in any environment", () => {
+    configureValidEnv();
+    process.env.CHECKOUT_FREE_SHIPPING_THRESHOLD_MINOR = "2999.99";
+    expect(() => assertServerEnv({ production: false })).toThrow(/CHECKOUT_FREE_SHIPPING_THRESHOLD_MINOR/);
+  });
+
+  it("requires Resend credentials for transactional email", () => {
+    configureValidEnv();
+    delete process.env.RESEND_API_KEY;
+    expect(() => assertServerEnv({ production: true })).toThrow(/RESEND_API_KEY/);
+  });
+
+  it("rejects a malformed Resend sender address", () => {
+    configureValidEnv();
+    process.env.EMAIL_FROM_ADDRESS = "Cherry Doodle";
+    expect(() => assertServerEnv({ production: true })).toThrow(/EMAIL_FROM_ADDRESS/);
   });
 
   it("requires distributed rate limiting in production", () => {

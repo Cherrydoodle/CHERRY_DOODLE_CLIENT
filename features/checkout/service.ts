@@ -2,21 +2,25 @@ import "server-only";
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
-import { requireUser } from "@/lib/auth/authorization";
-import { requireHmacSecret } from "@/lib/env.server";
+import { requireUser, type AuthContext } from "@/lib/auth/authorization";
+import { requireCheckoutPricingConfig, requireHmacSecret } from "@/lib/env.server";
 import { ApiError } from "@/lib/http/problem";
 import { logger } from "@/lib/observability/logger";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
+import { enqueueEmail } from "@/features/email/service";
 import type { CheckoutConfirmationInput, CheckoutStartInput, CheckoutVerifyInput } from "@/features/checkout/schemas";
 import { razorpayWebhookSchema } from "@/features/checkout/schemas";
 import { mapOrderDetailRow, ORDER_DETAIL_SELECT, type MyOrderDetailDTO } from "@/features/customer-orders/dto";
 import { processRefundWebhookEvent } from "@/features/refunds/service";
 import {
+  captureRazorpayPayment,
   createRazorpayOrder,
+  createRazorpayRefund,
   fetchRazorpayPayment,
   getRazorpayPublicConfig,
   getRazorpaySecret,
   verifyRazorpayPaymentSignature,
+  WEBHOOK_TIMEOUT_MS,
   type RazorpayPayment,
 } from "@/features/checkout/razorpay";
 
@@ -68,18 +72,11 @@ export type CheckoutRecord = {
   customer_name: string;
   customer_email: string;
   customer_phone: string;
+  reservation_expires_at: string;
 };
 
 function one<T>(value: T | T[]) {
   return Array.isArray(value) ? value[0] : value;
-}
-
-function envMinor(name: string, fallback: number) {
-  const raw = process.env[name]?.trim();
-  if (!raw) return fallback;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 0) throw new ApiError(503, "SERVICE_UNAVAILABLE", `${name} must be a non-negative integer.`);
-  return value;
 }
 
 function tokenHash(token: string) {
@@ -165,9 +162,10 @@ async function resolveCheckoutLines(input: CheckoutStartInput) {
   const subtotalMinor = lines.reduce((sum, line) => sum + line.listUnitPriceMinor * line.quantity, 0);
   const merchandiseMinor = lines.reduce((sum, line) => sum + line.lineTotalMinor, 0);
   const discountMinor = subtotalMinor - merchandiseMinor;
-  const freeShippingThreshold = envMinor("CHECKOUT_FREE_SHIPPING_THRESHOLD_MINOR", 3500);
-  const flatShipping = envMinor("CHECKOUT_FLAT_SHIPPING_MINOR", 500);
-  const shippingMinor = merchandiseMinor >= freeShippingThreshold ? 0 : flatShipping;
+  // Validated at boot by lib/env.server.ts#requireCheckoutPricingConfig and required
+  // in production, so a missing value can no longer silently ship orders for free.
+  const { freeShippingThresholdMinor, flatShippingMinor } = requireCheckoutPricingConfig();
+  const shippingMinor = merchandiseMinor >= freeShippingThresholdMinor ? 0 : flatShippingMinor;
   const taxMinor = 0;
   return {
     lines,
@@ -196,16 +194,33 @@ function mapInventoryError(message: string) {
 // rejected before any cart/pricing work happens. Guest browsing and carts are
 // untouched -- only the purchase step is gated; proxy.ts gates the /checkout
 // page itself the same way.
-export async function startRazorpayCheckout(input: CheckoutStartInput) {
-  const auth = await requireUser();
+export async function startRazorpayCheckout(input: CheckoutStartInput, authContext?: AuthContext) {
+  // The route already resolves the caller to key its rate limiter; accepting that
+  // context avoids validating the same token twice per checkout start. It stays
+  // optional so every other caller keeps the original, self-contained behaviour.
+  const auth = authContext ?? (await requireUser());
   const resolved = await resolveCheckoutLines(input);
   if (resolved.totalMinor < 100) throw new ApiError(422, "ORDER_TOTAL_TOO_LOW", "The order total is below the payment provider minimum.");
 
   const admin = createAdminSupabaseClient();
   const checkoutToken = randomBytes(32).toString("base64url");
   const reservationExpiresAt = new Date(Date.now() + 20 * 60_000).toISOString();
+
+  // Links the session to the shopper's active cart so complete_razorpay_checkout can
+  // mark it 'converted' in the same transaction as the order. Without this the cart
+  // was only ever cleared by a client-side call, so a closed tab (or a webhook-only
+  // completion) left the just-purchased items sitting in the bag, inviting a
+  // duplicate purchase. Checkout is login-gated, so the user's cart is the only one.
+  const { data: activeCart } = await admin
+    .from("carts")
+    .select("id")
+    .eq("user_id", auth.userId)
+    .eq("status", "active")
+    .maybeSingle();
+
   const { data: session, error: sessionError } = await admin.from("checkout_sessions").insert({
     user_id: auth.userId,
+    cart_id: activeCart?.id ?? null,
     guest_token_hash: tokenHash(checkoutToken),
     customer_name: input.customer.name,
     customer_email: input.customer.email,
@@ -334,6 +349,21 @@ async function completedOrder(orderId: string) {
   };
 }
 
+// A captured payment that could not become an order is a money-affecting incident,
+// not routine traffic. These surface to callers as 409s, and handleRoute only
+// reports 5xx to Sentry, so they are escalated explicitly here instead of being
+// visible only to whoever happens to read the review queue.
+async function alertPaymentIncident(event: string, fields: Record<string, unknown>) {
+  logger.error(event, fields);
+  if (process.env.VITEST) return;
+  try {
+    const Sentry = await import("@sentry/nextjs");
+    Sentry.captureMessage(event, { level: "error", tags: { area: "payments" }, extra: fields });
+  } catch {
+    // Telemetry must never change a payment outcome.
+  }
+}
+
 async function markCapturedPaymentForReview(session: CheckoutRecord, payment: RazorpayPayment, reason: string) {
   const admin = createAdminSupabaseClient();
   await admin.from("payment_attempts").upsert({
@@ -348,27 +378,142 @@ async function markCapturedPaymentForReview(session: CheckoutRecord, payment: Ra
     metadata: { requiresReviewReason: reason.slice(0, 500) },
   }, { onConflict: "provider,provider_payment_id" });
   await admin.from("checkout_sessions").update({ status: "requires_review", razorpay_payment_id: payment.id }).eq("id", session.id).neq("status", "completed");
+
+  await alertPaymentIncident("payment_requires_review", {
+    checkoutSessionId: session.id,
+    razorpayPaymentId: payment.id,
+    amountMinor: payment.amount,
+    currency: payment.currency,
+    reason: reason.slice(0, 300),
+  });
+  // The customer's money has left their account; silence is the worst response.
+  await enqueueEmail("payment_requires_review", session.customer_email, {
+    customerName: session.customer_name,
+    amountMinor: payment.amount,
+    currency: payment.currency,
+    razorpayPaymentId: payment.id,
+  });
 }
 
-// Exported (unchanged) so the RZ-050 admin retry action and the reconciliation
-// sync job can reuse this exact, already-audited capture-to-order logic instead
-// of duplicating it — both simply call it again with a freshly re-fetched payment.
+/**
+ * Guarantees the payment is captured before any order is created.
+ *
+ * Auto-capture is a Razorpay Dashboard setting that the Orders API cannot force, so
+ * an `authorized` payment is captured here explicitly. Without this, an account with
+ * auto-capture disabled would authorize every payment, create no orders, and have
+ * Razorpay auto-refund the customer days later — with nothing in our logs to say so.
+ */
+async function ensureCaptured(session: CheckoutRecord, payment: RazorpayPayment): Promise<RazorpayPayment> {
+  if (payment.status === "captured" && payment.captured === true) return payment;
+  if (payment.status !== "authorized") {
+    throw new ApiError(409, "PAYMENT_NOT_CAPTURED", "Payment is not captured yet.");
+  }
+
+  try {
+    const captured = await captureRazorpayPayment(payment.id, session.total_minor, session.currency);
+    if (captured.status === "captured" && captured.captured === true) return captured;
+  } catch (error) {
+    // "already captured" is the expected error when the account's own auto-capture
+    // won the race, so the authoritative re-fetch below settles it either way.
+    logger.warn("razorpay_capture_attempt_failed", {
+      checkoutSessionId: session.id,
+      razorpayPaymentId: payment.id,
+      errorMessage: error instanceof Error ? error.message.slice(0, 200) : "unknown",
+    });
+  }
+
+  const refreshed = await fetchRazorpayPayment(payment.id);
+  if (refreshed.status === "captured" && refreshed.captured === true) return refreshed;
+  throw new ApiError(409, "PAYMENT_NOT_CAPTURED", "Payment is not captured yet.");
+}
+
+/**
+ * Refunds a capture we can never fulfil (the reservation lapsed and the stock is
+ * gone), rather than parking the customer's money in a manual queue indefinitely.
+ * The idempotency key is the checkout session id, so a retried webhook or a rerun
+ * of the reconciliation job cannot issue a second refund for the same checkout.
+ */
+async function autoRefundUnfulfillableCapture(session: CheckoutRecord, payment: RazorpayPayment, reason: string): Promise<never> {
+  const admin = createAdminSupabaseClient();
+  try {
+    await createRazorpayRefund({
+      paymentId: payment.id,
+      amount: payment.amount,
+      idempotencyKey: `checkout-unfulfillable:${session.id}`,
+      notes: { checkout_id: session.id, reason: "checkout_unfulfillable" },
+    });
+  } catch (error) {
+    await markCapturedPaymentForReview(session, payment, `Auto-refund failed: ${error instanceof Error ? error.message : "unknown"}`);
+    throw new ApiError(409, "PAYMENT_REQUIRES_REVIEW", "Payment was captured, but the order needs manual review. Please contact support.");
+  }
+
+  await admin.from("payment_attempts").upsert({
+    checkout_session_id: session.id,
+    provider: "razorpay",
+    provider_order_id: session.razorpay_order_id,
+    provider_payment_id: payment.id,
+    status: "refunded",
+    amount_minor: payment.amount,
+    currency: payment.currency,
+    method: payment.method,
+    metadata: { autoRefundReason: reason.slice(0, 500) },
+  }, { onConflict: "provider,provider_payment_id" });
+  await admin.from("checkout_sessions").update({ razorpay_payment_id: payment.id }).eq("id", session.id).neq("status", "completed");
+
+  await alertPaymentIncident("payment_auto_refunded", {
+    checkoutSessionId: session.id,
+    razorpayPaymentId: payment.id,
+    amountMinor: payment.amount,
+    currency: payment.currency,
+    reason: reason.slice(0, 300),
+  });
+  await enqueueEmail("payment_auto_refunded", session.customer_email, {
+    customerName: session.customer_name,
+    amountMinor: payment.amount,
+    currency: payment.currency,
+    razorpayPaymentId: payment.id,
+  });
+
+  throw new ApiError(409, "PAYMENT_AUTO_REFUNDED", "That checkout had already expired, so the payment was refunded in full. Please start a new order.");
+}
+
+// Exported so the admin retry action and the reconciliation sync job reuse this
+// exact capture-to-order logic instead of duplicating it — both simply call it
+// again with a freshly re-fetched payment.
 export async function finalizeCapturedPayment(session: CheckoutRecord, payment: RazorpayPayment) {
   if (session.status === "completed" && session.order_id) return completedOrder(session.order_id);
   if (!session.razorpay_order_id || payment.order_id !== session.razorpay_order_id) throw new ApiError(409, "PAYMENT_ORDER_MISMATCH", "The payment does not belong to this checkout.");
   if (payment.amount !== session.total_minor || payment.currency.toUpperCase() !== session.currency) throw new ApiError(409, "PAYMENT_AMOUNT_MISMATCH", "The captured payment amount does not match the checkout total.");
-  if (payment.status !== "captured" || payment.captured !== true) throw new ApiError(409, "PAYMENT_NOT_CAPTURED", "Payment is not captured yet.");
 
   const admin = createAdminSupabaseClient();
-  const capturedAt = new Date(payment.created_at * 1000).toISOString();
+  const capturedPayment = await ensureCaptured(session, payment);
+
+  // The money is now definitely ours to account for. If a payment.failed webhook or
+  // the expiry sweeper already took this session out of 'payment_pending' -- the
+  // customer retried after a decline, or finished a slow bank flow late -- ask the
+  // database to put it back into a completable state before giving up on it.
+  if (session.status !== "payment_pending") {
+    const { data: reclaimed, error: reclaimError } = await admin.rpc("reclaim_checkout_for_capture", {
+      p_checkout_session_id: session.id,
+    });
+    if (reclaimError || reclaimed !== true) {
+      return autoRefundUnfulfillableCapture(
+        session,
+        capturedPayment,
+        reclaimError?.message || `Checkout was '${session.status}' and its stock could not be re-reserved.`,
+      );
+    }
+  }
+
+  const capturedAt = new Date(capturedPayment.created_at * 1000).toISOString();
   const { data: orderId, error } = await admin.rpc("complete_razorpay_checkout", {
     p_checkout_session_id: session.id,
-    p_provider_payment_id: payment.id,
-    p_payment_method: payment.method || "unknown",
+    p_provider_payment_id: capturedPayment.id,
+    p_payment_method: capturedPayment.method || "unknown",
     p_captured_at: capturedAt,
   });
   if (error || !orderId) {
-    await markCapturedPaymentForReview(session, payment, error?.message || "Order conversion failed");
+    await markCapturedPaymentForReview(session, capturedPayment, error?.message || "Order conversion failed");
     throw new ApiError(409, "PAYMENT_REQUIRES_REVIEW", "Payment was captured, but the order needs manual review. Please contact support.");
   }
   return completedOrder(String(orderId));
@@ -378,13 +523,43 @@ export async function verifyAndCompleteRazorpayCheckout(input: CheckoutVerifyInp
   const session = await loadCheckout(input.checkoutId);
   if (!tokenMatches(input.checkoutToken, session.guest_token_hash)) throw new ApiError(404, "CHECKOUT_NOT_FOUND", "Checkout session not found.");
   if (session.status === "completed" && session.order_id) return completedOrder(session.order_id);
-  if (session.status === "failed" || session.status === "expired") throw new ApiError(409, "CHECKOUT_EXPIRED", "This checkout is no longer active.");
+  // A 'failed' or 'expired' session is deliberately NOT rejected here any more. The
+  // customer may have retried inside the Razorpay modal after a decline, or finished
+  // a slow bank flow after the reservation lapsed; in both cases real money moved.
+  // The signature check below and finalizeCapturedPayment's reclaim/refund handling
+  // decide the outcome from the provider's own record, not from our stale status.
   if (!session.razorpay_order_id || input.razorpayOrderId !== session.razorpay_order_id) throw new ApiError(409, "PAYMENT_ORDER_MISMATCH", "The payment does not belong to this checkout.");
   if (!verifyRazorpayPaymentSignature(session.razorpay_order_id, input.razorpayPaymentId, input.razorpaySignature, getRazorpaySecret())) {
     throw new ApiError(400, "PAYMENT_SIGNATURE_INVALID", "Payment verification failed.");
   }
   const payment = await fetchRazorpayPayment(input.razorpayPaymentId);
   return finalizeCapturedPayment(session, payment);
+}
+
+/**
+ * Releases a checkout the shopper walked away from (they closed the Razorpay modal
+ * or left the page). Without this the reservation sat until the 20-minute sweep, so
+ * a shopper retrying immediately could be told their own held stock was sold out.
+ *
+ * Safe against a payment that completes anyway: a later capture goes through
+ * finalizeCapturedPayment, which re-reserves the stock it just freed (or refunds).
+ * Authorized by the same capability token pair as /verify, so it cannot be used to
+ * cancel someone else's checkout.
+ */
+export async function cancelRazorpayCheckout(input: CheckoutConfirmationInput) {
+  const session = await loadCheckout(input.checkoutId);
+  if (!tokenMatches(input.checkoutToken, session.guest_token_hash)) {
+    throw new ApiError(404, "CHECKOUT_NOT_FOUND", "Checkout session not found.");
+  }
+  if (session.status !== "payment_pending" && session.status !== "creating_payment") {
+    return { released: false, status: session.status };
+  }
+  const { error } = await createAdminSupabaseClient().rpc("release_checkout_inventory", {
+    p_checkout_session_id: session.id,
+    p_target_status: "failed",
+  });
+  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "The checkout could not be released.");
+  return { released: true, status: "failed" as const };
 }
 
 async function recordFailedPayment(session: CheckoutRecord, payment: RazorpayPayment) {
@@ -416,8 +591,22 @@ async function recordFailedPayment(session: CheckoutRecord, payment: RazorpayPay
     error_description: payment.error_description?.slice(0, 1000) || null,
   }, { onConflict: "provider,provider_payment_id" });
 
-  // Free the reservation so the stock is available again (H7). Idempotent: a
-  // no-op if the session is already completed/failed/expired.
+  // A failed attempt must NOT end the checkout while the reservation is still live.
+  // Razorpay Checkout lets the customer retry in the same modal against the same
+  // razorpay_order_id after a decline or a wrong OTP; releasing the stock and marking
+  // the session 'failed' here used to make that successful retry uncompletable, so
+  // the money was captured and the order never created. The stock is only freed once
+  // the reservation window has actually closed (the checkout-cleanup job sweeps the
+  // rest), keeping the session payable for as long as the customer can still pay.
+  if (new Date(session.reservation_expires_at).getTime() > Date.now()) {
+    logger.info("payment_failed_retry_window_open", {
+      checkoutSessionId: session.id,
+      razorpayPaymentId: payment.id,
+      reservationExpiresAt: session.reservation_expires_at,
+    });
+    return;
+  }
+
   const release = await admin.rpc("release_checkout_inventory", { p_checkout_session_id: session.id, p_target_status: "failed" });
   if (release.error) logger.error("checkout_inventory_release_failed", { checkoutSessionId: session.id, errorMessage: release.error.message });
 }
@@ -436,11 +625,34 @@ async function auditWebhookEvent(eventType: string, providerId: string | null, r
   if (error) logger.error("webhook_audit_write_failed", { eventType, requestId, errorCode: error.code });
 }
 
-export async function processRazorpayWebhook(rawBody: string, eventId: string, requestId: string) {
+export async function processRazorpayWebhook(rawBody: string, eventId: string | null, requestId: string) {
   const payloadHash = createHash("sha256").update(rawBody).digest("hex");
-  const event = razorpayWebhookSchema.parse(JSON.parse(rawBody));
+
+  // The signature has already been verified, so this body genuinely came from
+  // Razorpay. Anything we simply do not model (a new event type, a payload shape
+  // our schema is stricter than) is acknowledged rather than rejected: returning a
+  // non-2xx would make Razorpay retry it forever and eventually disable the endpoint.
+  let event: ReturnType<typeof razorpayWebhookSchema.parse>;
+  try {
+    const parsed = razorpayWebhookSchema.safeParse(JSON.parse(rawBody));
+    if (!parsed.success) {
+      logger.warn("razorpay_webhook_unmodelled", { requestId, eventId, payloadHash });
+      return { received: true, duplicate: false, handled: false };
+    }
+    event = parsed.data;
+  } catch {
+    logger.warn("razorpay_webhook_unparsable_json", { requestId, eventId, payloadHash });
+    return { received: true, duplicate: false, handled: false };
+  }
+
   const admin = createAdminSupabaseClient();
-  const eventKey = `razorpay:${eventId}`;
+  // Deduplicate on the SIGNED bytes, not on `x-razorpay-event-id`. That header sits
+  // outside the HMAC, so a header-keyed guard could be bypassed by replaying a
+  // captured, validly-signed body with a fresh random id — forcing unbounded
+  // reprocessing, and with it unbounded outbound Razorpay API calls. The hash of the
+  // exact delivered body is the only replay-proof key available, and a genuine
+  // Razorpay retry resends that body byte-for-byte.
+  const eventKey = `razorpay:${payloadHash}`;
 
   const claim = await admin.from("webhook_events").insert({
     provider: "razorpay",
@@ -460,7 +672,7 @@ export async function processRazorpayWebhook(rawBody: string, eventId: string, r
     // so re-running is safe and is how a lost/failed webhook recovers (H7).
     const { data: existing, error: lookupError } = await admin.from("webhook_events").select("status,attempts").eq("event_key", eventKey).maybeSingle();
     if (lookupError || !existing) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Webhook deduplication is unavailable.");
-    if (existing.status === "processed") return { received: true, duplicate: true };
+    if (existing.status === "processed") return { received: true, duplicate: true, handled: true };
     attempts = existing.attempts + 1;
   } else if (claim.error) {
     throw new ApiError(503, "SERVICE_UNAVAILABLE", "Webhook deduplication is unavailable.");
@@ -469,8 +681,17 @@ export async function processRazorpayWebhook(rawBody: string, eventId: string, r
   try {
     const entity = event.payload.payment?.entity;
     const refundEntity = event.payload.refund?.entity;
-    if ((event.event === "payment.captured" || event.event === "order.paid") && entity) {
-      const payment = await fetchRazorpayPayment(entity.id);
+    let handled = true;
+    // `payment.authorized` is handled alongside the capture events: the payment is
+    // re-fetched and finalizeCapturedPayment captures it explicitly if the account's
+    // auto-capture did not. Without it, an account with auto-capture off would leave
+    // every payment authorized until Razorpay auto-refunded it.
+    if ((event.event === "payment.captured" || event.event === "order.paid" || event.event === "payment.authorized") && entity) {
+      // Tighter timeout than an interactive request: this runs while Razorpay is
+      // still waiting on the webhook response, and blowing its ~5s deadline causes
+      // retry storms and eventually endpoint deactivation. A timeout here surfaces
+      // as a 503, which is exactly the case where a Razorpay retry is wanted.
+      const payment = await fetchRazorpayPayment(entity.id, { timeoutMs: WEBHOOK_TIMEOUT_MS });
       if (payment.order_id) {
         const { data: session } = await admin.from("checkout_sessions").select("*").eq("razorpay_order_id", payment.order_id).maybeSingle();
         if (session) await finalizeCapturedPayment(session as CheckoutRecord, payment);
@@ -480,10 +701,22 @@ export async function processRazorpayWebhook(rawBody: string, eventId: string, r
       if (session) await recordFailedPayment(session as CheckoutRecord, entity as unknown as RazorpayPayment);
     } else if (event.event.startsWith("refund.") && refundEntity) {
       await processRefundWebhookEvent(refundEntity);
+    } else if (event.event.startsWith("payment.dispute.")) {
+      // Chargebacks carry a hard response deadline and direct financial exposure.
+      // There is no dispute table yet, so the durable record is the audit_logs row
+      // written below plus an explicit alert — never a silent 200.
+      await alertPaymentIncident("payment_dispute_event", {
+        event: event.event,
+        razorpayPaymentId: entity?.id ?? null,
+        amountMinor: entity?.amount ?? null,
+        requestId,
+      });
+    } else {
+      handled = false;
     }
     await admin.from("webhook_events").update({ status: "processed", processed_at: new Date().toISOString(), attempts, last_error: null }).eq("event_key", eventKey);
     await auditWebhookEvent(event.event, entity?.id ?? refundEntity?.id ?? null, requestId);
-    return { received: true, duplicate: false };
+    return { received: true, duplicate: false, handled };
   } catch (error) {
     await admin.from("webhook_events").update({
       status: "failed",

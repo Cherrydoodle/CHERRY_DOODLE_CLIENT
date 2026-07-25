@@ -79,16 +79,73 @@ export function requireRazorpayConfig() {
   return { keyId, keySecret, mode } as const;
 }
 
+/**
+ * The webhook signing secret, plus an optional outgoing one.
+ *
+ * `RAZORPAY_WEBHOOK_SECRET_PREVIOUS` exists purely to make rotation non-lossy: the
+ * dashboard change and the deploy of the new secret cannot be simultaneous, and any
+ * delivery signed with the old secret in that window would otherwise be rejected and
+ * eventually abandoned by Razorpay. Set it during a rotation, then remove it.
+ */
 export function requireRazorpayWebhookSecret() {
-  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
-  if (!webhookSecret) throw new ConfigurationError("RAZORPAY_WEBHOOK_SECRET is required for Razorpay webhooks.");
-  return webhookSecret;
+  const current = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
+  if (!current) throw new ConfigurationError("RAZORPAY_WEBHOOK_SECRET is required for Razorpay webhooks.");
+  const previous = process.env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS?.trim() || null;
+  if (previous && previous === current) {
+    throw new ConfigurationError("RAZORPAY_WEBHOOK_SECRET_PREVIOUS must differ from RAZORPAY_WEBHOOK_SECRET (or be removed).");
+  }
+  return { current, previous } as const;
 }
 
 export function requireCronSecret() {
   const cronSecret = process.env.CRON_SECRET?.trim();
   if (!cronSecret) throw new ConfigurationError("CRON_SECRET is required to authorize scheduled jobs.");
   return cronSecret;
+}
+
+// Resend (https://resend.com) is the transactional email provider. The sending
+// domain is cherrydoodle.in, which must be verified in the Resend dashboard (SPF +
+// DKIM) before anything sends; an unverified domain fails every send with a 403.
+export function requireResendConfig() {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  const from = process.env.EMAIL_FROM_ADDRESS?.trim();
+  if (!apiKey || !from) {
+    throw new ConfigurationError("Resend is not configured. Set RESEND_API_KEY and EMAIL_FROM_ADDRESS.");
+  }
+  if (!apiKey.startsWith("re_")) throw new ConfigurationError("RESEND_API_KEY has an invalid format (expected a re_... key).");
+  // Accepts both `orders@cherrydoodle.in` and `Cherry Doodle <orders@cherrydoodle.in>`.
+  const address = from.match(/<([^>]+)>\s*$/)?.[1]?.trim() ?? from;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
+    throw new ConfigurationError('EMAIL_FROM_ADDRESS must be an email address or "Name <email@domain>".');
+  }
+  const replyTo = process.env.EMAIL_REPLY_TO_ADDRESS?.trim() || null;
+  return { apiKey, from, fromAddress: address, replyTo } as const;
+}
+
+// RZ-AUDIT H-5: these two values are real money. They used to be read inline in
+// features/checkout/service.ts with hardcoded fallbacks of 3500/500 minor units
+// (Rs 35 / Rs 5) that disagreed with the documented .env.example values by ~60x, so
+// an environment that simply forgot to set them shipped almost every order free
+// with no error and no alert. They are now required in production and validated at
+// boot alongside every other money-critical setting.
+function checkoutMinor(name: string, developmentFallback: number, production: boolean) {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    if (production) throw new ConfigurationError(`${name} is required in production (order totals depend on it).`);
+    return developmentFallback;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new ConfigurationError(`${name} must be a non-negative integer in minor units (paise).`);
+  }
+  return value;
+}
+
+export function requireCheckoutPricingConfig(production = isProduction()) {
+  return {
+    freeShippingThresholdMinor: checkoutMinor("CHECKOUT_FREE_SHIPPING_THRESHOLD_MINOR", 299_900, production),
+    flatShippingMinor: checkoutMinor("CHECKOUT_FLAT_SHIPPING_MINOR", 4_900, production),
+  } as const;
 }
 
 export function isProduction() {
@@ -103,6 +160,7 @@ const OWNER_GENERATED_SECRETS = [
   "GUEST_CART_TOKEN_PEPPER",
   "CRON_SECRET",
   "RAZORPAY_WEBHOOK_SECRET",
+  "RAZORPAY_WEBHOOK_SECRET_PREVIOUS",
 ] as const;
 
 const MIN_SECRET_LENGTH = 32;
@@ -119,6 +177,8 @@ const REQUIRED_PRODUCTION_VALUES = [
   "RAZORPAY_KEY_ID",
   "RAZORPAY_KEY_SECRET",
   "RAZORPAY_WEBHOOK_SECRET",
+  "RESEND_API_KEY",
+  "EMAIL_FROM_ADDRESS",
   "GUEST_CART_TOKEN_PEPPER",
   "APP_HMAC_SECRET",
   "CRON_SECRET",
@@ -151,8 +211,10 @@ export function assertServerEnv(options: { production?: boolean } = {}): void {
   collect(() => requireCloudinaryConfig());
   collect(() => requireRazorpayConfig());
   collect(() => requireRazorpayWebhookSecret());
+  collect(() => requireResendConfig());
   collect(() => requireApplicationSecrets());
   collect(() => requireCronSecret());
+  collect(() => requireCheckoutPricingConfig(production));
 
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim();
   if (!siteUrl) {

@@ -56,6 +56,14 @@ jobs:
           RAZORPAY_KEY_ID: rzp_test_e2eplaceholder
           RAZORPAY_KEY_SECRET: e2e-placeholder-secret
           RAZORPAY_WEBHOOK_SECRET: e2e0000e2e0000e2e0000e2e0000e2e0
-          GUEST_CART_TOKEN_PEPPER: e2e0000000000000000000000000000
-          APP_HMAC_SECRET: e2e1111111111111111111111111111
-          CRON_SECRET: e2e2222222222222222222222222222
+          # assertServerEnv requires Resend at boot in every environment (dev only
+          # checks format, not real validity), so the dev server the e2e run starts
+          # needs these present or it refuses to boot. No mail is sent during e2e.
+          RESEND_API_KEY: re_e2eplaceholder
+          EMAIL_FROM_ADDRESS: Cherry Doodle <orders@cherrydoodle.in>
+          # The owner-generated secrets must be >= 32 chars in EVERY environment
+          # (lib/env.server.ts, the min-length loop is not gated by production).
+          # The previous 31-char placeholders were one short.
+          GUEST_CART_TOKEN_PEPPER: e2e00000000000000000000000000000000
+          APP_HMAC_SECRET: e2e11111111111111111111111111111111
+          CRON_SECRET: e2e22222222222222222222222222222222
