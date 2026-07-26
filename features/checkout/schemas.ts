@@ -24,6 +24,10 @@ export const checkoutStartSchema = z.object({
   customerNote: z.string().trim().max(2000).optional(),
   items: z.array(z.object({
     productSlug: slugSchema,
+    // variantId is preferred when present -- it is the only unambiguous way to pick a
+    // variant once two variants can share a color (see 202607260001). color is kept for
+    // backward compatibility with any in-flight session built by an older client.
+    variantId: z.string().uuid().optional(),
     color: z.string().trim().min(1).max(80).optional(),
     quantity: z.number().int().min(1).max(99),
   }).strict()).min(1).max(25),

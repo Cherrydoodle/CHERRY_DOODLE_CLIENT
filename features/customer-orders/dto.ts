@@ -20,6 +20,8 @@ export type MyOrderItemDTO = {
   id: string;
   name: string;
   sku: string | null;
+  variantLabel: string | null;
+  colorName: string | null;
   quantity: number;
   unitPriceMinor: number;
   lineTotalMinor: number;
@@ -66,7 +68,7 @@ export const ORDER_DETAIL_SELECT = `
   subtotal_minor,discount_minor,shipping_minor,tax_minor,total_minor,
   shipping_address,customer_note,return_status,return_reason,return_resolution_note,
   carrier,tracking_number,tracking_url,
-  order_items(id,product_name,sku,quantity,unit_price_minor,line_total_minor),
+  order_items(id,product_name,sku,variant_label,color_name,quantity,unit_price_minor,line_total_minor),
   order_status_history(id,to_status,created_at),
   refunds(id,amount_minor,currency,status,reason,created_at)
 `;
@@ -109,6 +111,8 @@ export function mapOrderDetailRow(row: Record<string, unknown>): MyOrderDetailDT
       id: String(item.id),
       name: String(item.product_name),
       sku: item.sku ? String(item.sku) : null,
+      variantLabel: item.variant_label ? String(item.variant_label) : null,
+      colorName: item.color_name ? String(item.color_name) : null,
       quantity: Number(item.quantity),
       unitPriceMinor: Number(item.unit_price_minor),
       lineTotalMinor: Number(item.line_total_minor),

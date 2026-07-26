@@ -9,7 +9,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import type { AddressDTO } from "@/features/addresses/service";
 import { track } from "@/lib/analytics/posthog";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, variantOptionLabel } from "@/lib/format";
 import { shimmerPlaceholder } from "@/lib/image/shimmer";
 import { useShop } from "@/lib/store";
 
@@ -274,7 +274,7 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
         billingAddress,
         termsAccepted: true,
         customerNote: String(form.get("note") || "") || undefined,
-        items: items.map((item) => ({ productSlug: item.product.slug, color: item.variant.color.name, quantity: item.quantity })),
+        items: items.map((item) => ({ productSlug: item.product.slug, variantId: item.variant.id, color: item.variant.color.name, quantity: item.quantity })),
       }, startKey.current);
 
       if (saveNewAddress) {
@@ -489,7 +489,7 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
                   </div>
                   <div className="min-w-0 flex-1 text-sm">
                     <p className="line-clamp-1 font-bold">{item.product.name}</p>
-                    <p className="text-xs text-muted-foreground">{item.variant.color.name} · Qty {item.quantity}</p>
+                    <p className="text-xs text-muted-foreground">{variantOptionLabel(item.variant)} · Qty {item.quantity}</p>
                   </div>
                   <p className="text-sm font-bold">{formatMoney(item.lineTotalCents, currency)}</p>
                 </li>

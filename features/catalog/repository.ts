@@ -7,7 +7,7 @@ import { z } from "zod";
 import { mediaImageDto } from "@/features/media/delivery";
 import { decodeCursor, encodeCursor } from "@/features/catalog/cursor";
 import { staticCategories, staticHome, staticListProducts, staticProductDetail } from "@/features/catalog/static-repository";
-import type { Availability, CategoryDTO, HomeDTO, MarqueeItemDTO, ProductDetailDTO, ProductFilters, ProductListDTO, ProductSummaryDTO, ReelDTO } from "@/features/catalog/types";
+import type { Availability, CategoryDTO, HomeDTO, ImageDTO, MarqueeItemDTO, ProductDetailDTO, ProductFilters, ProductListDTO, ProductSummaryDTO, ReelDTO } from "@/features/catalog/types";
 import { ApiError } from "@/lib/http/problem";
 import { getPublicSupabaseConfig } from "@/lib/public-env";
 // Public catalog reads use the service-role client rather than the cookie-based one: this data is
@@ -36,7 +36,7 @@ function catalogUnavailable(operation: string, message: string, error: Postgrest
 }
 
 const colorSchema = z.object({
-  id: z.string().uuid(), name: z.string(), slug: z.string(), hex: z.string(), variantId: z.string().uuid(), sku: z.string(),
+  id: z.string().uuid(), name: z.string(), slug: z.string(), hex: z.string(), variantId: z.string().uuid(), label: z.string(), sku: z.string(),
   stockQuantity: z.number().int().nonnegative(), lowStockThreshold: z.number().int().nonnegative(),
 });
 
@@ -273,6 +273,21 @@ async function fetchProductDetail(slug: string): Promise<ProductDetailDTO | null
     if (!media || media.status !== "ready" || media.storage_provider !== "cloudinary") return [];
     return [mediaImageDto({ id: media.id, storageKey: media.storage_key, alt: entry.alt_text_override ?? media.alt_text, width: media.width ?? 1, height: media.height ?? 1 })];
   });
+  const { data: variantMediaRows, error: variantMediaError } = await supabase
+    .from("product_variant_media")
+    .select("product_variant_id,position,media_assets!inner(id,storage_key,storage_provider,alt_text,width,height,status)")
+    .in("product_variant_id", row.colors.map((color) => color.variantId))
+    .order("position");
+  if (variantMediaError) throw catalogUnavailable("fetchVariantMedia", "Product variant media could not be loaded.", variantMediaError);
+  const imagesByVariant = new Map<string, ImageDTO[]>();
+  for (const entry of variantMediaRows ?? []) {
+    const media = Array.isArray(entry.media_assets) ? entry.media_assets[0] : entry.media_assets;
+    if (!media || media.status !== "ready" || media.storage_provider !== "cloudinary") continue;
+    const image = mediaImageDto({ id: media.id, storageKey: media.storage_key, alt: media.alt_text, width: media.width ?? 1, height: media.height ?? 1 });
+    const list = imagesByVariant.get(entry.product_variant_id) ?? [];
+    list.push(image);
+    imagesByVariant.set(entry.product_variant_id, list);
+  }
   const related = await listProducts({ category: row.top_category_slug, sort: "featured", limit: 5 });
   return {
     ...summary,
@@ -284,7 +299,9 @@ async function fetchProductDetail(slug: string): Promise<ProductDetailDTO | null
     variants: row.colors.map((color) => ({
       id: color.variantId,
       sku: color.sku,
+      label: color.label,
       color: { id: color.id, name: color.name, slug: color.slug, hex: color.hex },
+      images: imagesByVariant.get(color.variantId) ?? [],
       availability: (color.stockQuantity <= 0 ? "out_of_stock" : color.stockQuantity <= color.lowStockThreshold ? "low_stock" : "in_stock") as Availability,
       maxQuantity: Math.min(99, color.stockQuantity),
     })),

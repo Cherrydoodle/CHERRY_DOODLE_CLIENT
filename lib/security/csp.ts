@@ -30,12 +30,10 @@ export const RAZORPAY_ORIGIN = "https://*.razorpay.com";
 // instance would need its own origin added here instead.
 export const SENTRY_ORIGIN = "https://*.sentry.io";
 
-// Instagram reel embeds (components/ReelsSection.tsx): embed.js is served from
-// www.instagram.com, renders into a www.instagram.com iframe, and pulls preview
-// media from Instagram/Facebook CDNs. Scoped to those hosts rather than a wildcard.
-export const INSTAGRAM_SCRIPT_ORIGIN = "https://www.instagram.com";
+// Instagram reel embeds (components/InstagramEmbed.tsx) render a direct
+// instagram.com/{reel|p}/<id>/embed/ iframe -- no script is loaded into our
+// page, so only frame-src needs to allow the host.
 export const INSTAGRAM_FRAME_ORIGIN = "https://www.instagram.com";
-export const INSTAGRAM_IMG_ORIGINS = "https://www.instagram.com https://*.cdninstagram.com https://*.fbcdn.net";
 
 /**
  * Shared CSP directive builder used by both next.config.ts (the permissive,
@@ -51,11 +49,11 @@ export function buildContentSecurityPolicy(options: { scriptSrc: string; styleSr
 
   return [
     "default-src 'self'",
-    `script-src ${options.scriptSrc} ${INSTAGRAM_SCRIPT_ORIGIN}`,
+    `script-src ${options.scriptSrc}`,
     `style-src ${options.styleSrc}`,
-    `img-src 'self' data: blob: https://res.cloudinary.com ${RAZORPAY_ORIGIN} ${INSTAGRAM_IMG_ORIGINS}`,
+    `img-src 'self' data: blob: https://res.cloudinary.com ${RAZORPAY_ORIGIN}`,
     "font-src 'self' data:",
-    `connect-src ${connectSrc} ${INSTAGRAM_SCRIPT_ORIGIN}`,
+    `connect-src ${connectSrc}`,
     `frame-src ${RAZORPAY_ORIGIN} ${INSTAGRAM_FRAME_ORIGIN}`,
     "frame-ancestors 'none'",
     "form-action 'self'",

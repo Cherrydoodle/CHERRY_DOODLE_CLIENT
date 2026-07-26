@@ -147,7 +147,10 @@ describe("mapOrderDetailRow", () => {
       shipping_address: { line1: "1 Blossom Road", city: "Bengaluru" },
       customer_note: "Please gift wrap",
       order_items: [
-        { id: "item-1", product_name: "Cherry Bunny Gel Pen Set", sku: "CBGP-1", quantity: 2, unit_price_minor: 900, line_total_minor: 1800 },
+        { id: "item-1", product_name: "Cherry Bunny Gel Pen Set", sku: "CBGP-1", variant_label: "Cherry", color_name: "Cherry", quantity: 2, unit_price_minor: 900, line_total_minor: 1800 },
+        // A pre-existing order placed before the variant-label migration: the snapshot
+        // columns are null, and the DTO must fall back to null rather than throwing.
+        { id: "item-2", product_name: "Legacy Pen", sku: null, quantity: 1, unit_price_minor: 500, line_total_minor: 500 },
       ],
       order_status_history: [
         { id: "h2", to_status: "shipped", created_at: "2026-01-02T00:00:00Z" },
@@ -157,7 +160,8 @@ describe("mapOrderDetailRow", () => {
 
     expect(dto.orderNumber).toBe("CD-000002");
     expect(dto.items).toEqual([
-      { id: "item-1", name: "Cherry Bunny Gel Pen Set", sku: "CBGP-1", quantity: 2, unitPriceMinor: 900, lineTotalMinor: 1800 },
+      { id: "item-1", name: "Cherry Bunny Gel Pen Set", sku: "CBGP-1", variantLabel: "Cherry", colorName: "Cherry", quantity: 2, unitPriceMinor: 900, lineTotalMinor: 1800 },
+      { id: "item-2", name: "Legacy Pen", sku: null, variantLabel: null, colorName: null, quantity: 1, unitPriceMinor: 500, lineTotalMinor: 500 },
     ]);
     expect(dto.shippingAddress).toEqual({ line1: "1 Blossom Road", city: "Bengaluru" });
     expect(dto.customerNote).toBe("Please gift wrap");

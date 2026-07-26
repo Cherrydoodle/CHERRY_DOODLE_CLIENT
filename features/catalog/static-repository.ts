@@ -109,7 +109,9 @@ export function staticProductDetail(slug: string): ProductDetailDTO | null {
     variants: product.colors.map((color, index) => ({
       id: stableUuid(`variant:${product.id}:${color.name}`),
       sku: `STATIC-${product.id}-${index + 1}`,
+      label: color.name,
       color: { id: stableUuid(`color:${color.name}`), name: color.name, slug: colorSlug(color.name), hex: color.hex },
+      images: [],
       availability: "in_stock",
       maxQuantity: 99,
     })),

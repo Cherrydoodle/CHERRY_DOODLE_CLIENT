@@ -30,16 +30,21 @@ describe("admin catalog validation", () => {
   });
 
   it("applies safe variant inventory defaults", () => {
-    expect(variantCreateSchema.parse({ colorId, sku: "CD-PEN-BERRY", stockQuantity: 20 })).toMatchObject({
+    expect(variantCreateSchema.parse({ colorId, label: "Berry", sku: "CD-PEN-BERRY", stockQuantity: 20 })).toMatchObject({
       lowStockThreshold: 5,
       sortOrder: 0,
     });
   });
 
+  it("requires a label so two variants can share a color without becoming ambiguous", () => {
+    expect(variantCreateSchema.safeParse({ colorId, sku: "CD-PEN-BERRY", stockQuantity: 20 }).success).toBe(false);
+    expect(variantCreateSchema.safeParse({ colorId, label: "  ", sku: "CD-PEN-BERRY", stockQuantity: 20 }).success).toBe(false);
+  });
+
   describe("atomic product creation payload", () => {
     const complete = {
       ...product,
-      variant: { colorId, sku: "CD-PEN-BERRY", stockQuantity: 20 },
+      variant: { colorId, label: "Berry", sku: "CD-PEN-BERRY", stockQuantity: 20 },
       mediaId,
       publish: false,
     };

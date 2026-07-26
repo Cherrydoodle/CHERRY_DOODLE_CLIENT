@@ -187,6 +187,7 @@ export async function getOrder(orderId: string) {
     id: String(item.id), productId: item.product_id ? String(item.product_id) : null,
     variantId: item.product_variant_id ? String(item.product_variant_id) : null,
     name: String(item.product_name), sku: item.sku ? String(item.sku) : null,
+    variantLabel: item.variant_label ? String(item.variant_label) : null, colorName: item.color_name ? String(item.color_name) : null,
     quantity: Number(item.quantity), unitPriceMinor: Number(item.unit_price_minor), lineTotalMinor: Number(item.line_total_minor),
     customizations: await Promise.all(((item.order_item_customizations as Array<Record<string, unknown>> | null) ?? []).map(async (customization) => {
       const mediaValue = customization.media_assets;

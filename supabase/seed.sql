@@ -7,7 +7,7 @@ insert into public.categories (slug, name, emoji, sort_order) values
   ('stickers-deco', 'Stickers & Deco', '🌸', 30),
   ('bags-pouches', 'Bags & Pouches', '🎒', 40),
   ('bottles-lifestyle', 'Bottles & Lifestyle', '🍶', 50)
-on conflict (slug) do update set name = excluded.name, emoji = excluded.emoji, sort_order = excluded.sort_order;
+on conflict (slug) where deleted_at is null do update set name = excluded.name, emoji = excluded.emoji, sort_order = excluded.sort_order;
 
 insert into public.categories (parent_id, slug, name, sort_order)
 select parent.id, child.slug, child.name, child.sort_order
@@ -32,7 +32,7 @@ from (values
   ('bottles-lifestyle', 'desk-accessories', 'Desk Accessories', 30)
 ) as child(parent_slug, slug, name, sort_order)
 join public.categories parent on parent.slug = child.parent_slug
-on conflict (slug) do update set parent_id = excluded.parent_id, name = excluded.name, sort_order = excluded.sort_order;
+on conflict (slug) where deleted_at is null do update set parent_id = excluded.parent_id, name = excluded.name, sort_order = excluded.sort_order;
 
 insert into public.colors (name, slug, hex_code, sort_order) values
   ('Cherry', 'cherry', '#f4a4b8', 10),
@@ -59,7 +59,7 @@ insert into public.products (
   ('soft-bear-highlighter-set', 'Soft Bear Highlighter Set', 'Set of 4 highlighters', 'Tiny bear-shaped highlighters with mild pastel ink that will not shout on your page. Chisel tip for both broad strokes and detail work.', 'ABS plastic', '10 cm each', 107900, null, 4.60, 176, 100, 'draft'),
   ('pink-sakura-memo-pad', 'Pink Sakura Memo Pad', '100 sheets', 'A soft sakura-illustrated memo pad for love notes, to-do lists, and little kindnesses left on someone’s desk.', 'Recycled paper', '10 x 12 cm', 58100, null, 4.70, 88, 110, 'draft'),
   ('cozy-desk-deco-kit', 'Cozy Desk Deco Kit', '8-piece desk set', 'Everything you need to soften your desk: a mini memo tray, heart clips, blush erasers, and a matching pen — all in one gift-ready box.', 'Mixed', 'Various', 282200, 232400, 4.80, 122, 120, 'draft')
-on conflict (slug) do update set
+on conflict (slug) where deleted_at is null do update set
   name = excluded.name, label = excluded.label, description = excluded.description, material = excluded.material,
   size = excluded.size, base_price_cents = excluded.base_price_cents, sale_price_cents = excluded.sale_price_cents,
   aggregate_rating = excluded.aggregate_rating, review_count = excluded.review_count,
@@ -85,8 +85,8 @@ join public.products p on p.slug = mapping.product_slug
 join public.categories c on c.slug = mapping.category_slug
 on conflict (product_id, category_id) do update set is_primary = true;
 
-insert into public.product_variants (product_id, color_id, sku, stock_quantity, low_stock_threshold, sort_order)
-select p.id, c.id, mapping.sku, 100, 5, mapping.sort_order
+insert into public.product_variants (product_id, color_id, label, sku, stock_quantity, low_stock_threshold, sort_order)
+select p.id, c.id, c.name, mapping.sku, 100, 5, mapping.sort_order
 from (values
   ('cherry-bunny-gel-pen-set','cherry','CD-PEN-CHERRY',10), ('cherry-bunny-gel-pen-set','blush','CD-PEN-BLUSH',20), ('cherry-bunny-gel-pen-set','cream','CD-PEN-CREAM',30), ('cherry-bunny-gel-pen-set','lilac','CD-PEN-LILAC',40),
   ('pastel-cloud-sticky-notes','blush','CD-STICKY-BLUSH',10), ('pastel-cloud-sticky-notes','cream','CD-STICKY-CREAM',20), ('pastel-cloud-sticky-notes','mint','CD-STICKY-MINT',30),
@@ -103,7 +103,7 @@ from (values
 ) as mapping(product_slug, color_slug, sku, sort_order)
 join public.products p on p.slug = mapping.product_slug
 join public.colors c on c.slug = mapping.color_slug
-on conflict (sku) do update set color_id = excluded.color_id, stock_quantity = excluded.stock_quantity, sort_order = excluded.sort_order;
+on conflict (sku) where deleted_at is null do update set color_id = excluded.color_id, label = excluded.label, stock_quantity = excluded.stock_quantity, sort_order = excluded.sort_order;
 
 insert into public.product_badges (product_id, badge)
 select p.id, mapping.badge::public.product_badge
