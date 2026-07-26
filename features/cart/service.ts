@@ -85,13 +85,17 @@ function productSummary(product: RawProduct, variant: RawVariant, color: RawColo
   const media = mediaRelation ? one(mediaRelation.media_assets) : undefined;
   const fallback = { id: product.id, alt: product.name, width: 1, height: 1, urls: { thumb: "/favicon.ico", card: "/favicon.ico", detail: "/favicon.ico" } };
   const effective = offer?.offerPriceCents ?? product.sale_price_cents ?? product.base_price_cents;
+  // Cart/wishlist items render via CartDrawer.tsx's own thumbnail, not ProductCard, so
+  // a single-image cardImages is enough to satisfy ProductSummaryDTO's shape.
+  const primaryImage = media && media.status === "ready" && media.storage_provider === "cloudinary" ? mediaImageDto({ id: media.id, storageKey: media.storage_key, alt: mediaRelation?.alt_text_override ?? media.alt_text, width: media.width ?? 1, height: media.height ?? 1 }) : fallback;
   return {
     id: product.id, slug: product.slug, name: product.name, label: product.label,
     pricing: {
       currency: product.currency, listCents: product.base_price_cents, saleCents: offer?.offerPriceCents ?? product.sale_price_cents, effectiveCents: effective,
       offer: offer ? { id: offer.offerId, name: offer.offerName, slug: offer.offerSlug, discountPercent: offer.discountPercent, endsAt: offer.endsAt } : null,
     },
-    primaryImage: media && media.status === "ready" && media.storage_provider === "cloudinary" ? mediaImageDto({ id: media.id, storageKey: media.storage_key, alt: mediaRelation?.alt_text_override ?? media.alt_text, width: media.width ?? 1, height: media.height ?? 1 }) : fallback,
+    primaryImage,
+    cardImages: [primaryImage],
     colors: [{ id: color.id, name: color.name, slug: color.slug, hex: color.hex_code }],
     defaultVariantId: variant.id,
     rating: { average: Number(product.aggregate_rating), count: product.review_count },

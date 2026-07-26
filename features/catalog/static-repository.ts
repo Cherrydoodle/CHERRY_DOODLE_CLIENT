@@ -29,6 +29,10 @@ function imageDto(image: StaticImageData, id: string, alt: string): ImageDTO {
 }
 
 export function staticProductSummary(product: Product): ProductSummaryDTO {
+  const primaryImage = imageDto(product.image, product.id, product.name);
+  const cardImages = product.gallery?.length
+    ? product.gallery.slice(0, 4).map((image, index) => imageDto(image, `${product.id}:card:${index}`, product.name))
+    : [primaryImage];
   return {
     id: stableUuid(`product:${product.id}`),
     slug: product.id,
@@ -40,7 +44,8 @@ export function staticProductSummary(product: Product): ProductSummaryDTO {
       saleCents: product.salePrice === undefined ? null : product.salePrice * 100 * INR_RATE,
       effectiveCents: (product.salePrice ?? product.price) * 100 * INR_RATE,
     },
-    primaryImage: imageDto(product.image, product.id, product.name),
+    primaryImage,
+    cardImages,
     colors: product.colors.map((color) => ({ id: stableUuid(`color:${color.name}`), name: color.name, slug: colorSlug(color.name), hex: color.hex })),
     defaultVariantId: null,
     rating: { average: product.rating, count: product.reviews },
@@ -158,6 +163,10 @@ export function staticHome(): HomeDTO {
     newArrivals: backfillTo(list((product) => product.badges.includes("new"), 4), featuredPool, 4),
     saleProducts: list((product) => product.salePrice !== undefined, 4),
     featured: featuredPool.slice(0, 8),
+    // The static fallback catalog carries no offer data (see staticListProducts's
+    // filters.offer branch above), so the home Offers section stays hidden.
+    offers: [],
+    offerProducts: [],
     serviceMessages: [
       { emoji: "🚚", title: "Ships across India", body: "Dispatched in 1–2 business days" },
       { emoji: "🎀", title: "Free gift on your first order", body: "A surprise sticker sheet inside" },

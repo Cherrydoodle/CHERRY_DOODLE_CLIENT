@@ -44,6 +44,9 @@ export function Footer({ categories, identity }: { categories: CategoryDTO[]; id
         <div>
           <div className="font-bold mb-3">Shop</div>
           <ul className="space-y-2 text-sm text-muted-foreground">
+            <li>
+              <Link href="/collections/all" className="hover:text-primary font-semibold">Shop All</Link>
+            </li>
             {categories.map((category) => (
               <li key={category.slug}>
                 <Link href={`/category/${category.slug}`} className="hover:text-primary">{category.name}</Link>
