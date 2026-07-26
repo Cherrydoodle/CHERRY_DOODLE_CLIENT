@@ -8,6 +8,7 @@ import { mediaImageDto } from "@/features/media/delivery";
 import { decodeCursor, encodeCursor } from "@/features/catalog/cursor";
 import { staticCategories, staticHome, staticListProducts, staticProductDetail } from "@/features/catalog/static-repository";
 import type { Availability, CategoryDTO, HomeDTO, ImageDTO, MarqueeItemDTO, ProductDetailDTO, ProductFilters, ProductListDTO, ProductSummaryDTO, ReelDTO } from "@/features/catalog/types";
+import { listActiveOffers } from "@/features/offers/repository";
 import { ApiError } from "@/lib/http/problem";
 import { getPublicSupabaseConfig } from "@/lib/public-env";
 // Public catalog reads use the service-role client rather than the cookie-based one: this data is
@@ -49,6 +50,12 @@ const productRowSchema = z.object({
   subcategory_slug: z.string(), subcategory_name: z.string(), top_category_slug: z.string(), top_category_name: z.string(),
   offer_id: z.string().uuid().nullable(), offer_name: z.string().nullable(), offer_slug: z.string().nullable(),
   offer_discount_percent: z.union([z.string(), z.number()]).nullable(), offer_price_cents: z.number().int().nullable(), offer_ends_at: z.string().nullable(),
+  // .nullish() rather than required: keeps the app booting against a database where
+  // the card_media migration (202607260003_public_product_cards_gallery.sql) hasn't
+  // been applied yet.
+  card_media: z.array(z.object({
+    id: z.string().uuid(), storageKey: z.string(), alt: z.string(), width: z.number().int().nullable(), height: z.number().int().nullable(),
+  })).nullish(),
 });
 
 const categoryRowSchema = z.object({
@@ -66,6 +73,13 @@ function summaryFromRow(input: unknown): ProductSummaryDTO {
   const offer = row.offer_id
     ? { id: row.offer_id, name: row.offer_name ?? "", slug: row.offer_slug ?? "", discountPercent: row.offer_discount_percent === null ? null : Number(row.offer_discount_percent), endsAt: row.offer_ends_at }
     : null;
+  const primaryImage = mediaImageDto({ id: row.media_id, storageKey: row.storage_key, alt: row.alt_text, width: row.width ?? 1, height: row.height ?? 1 });
+  // Primary image always first, deduplicated against card_media (which may repeat it as
+  // the top-ranked row) so the rotating card view never flashes the same image twice.
+  const extraImages = (row.card_media ?? [])
+    .filter((media) => media.id !== row.media_id)
+    .map((media) => mediaImageDto({ id: media.id, storageKey: media.storageKey, alt: media.alt, width: media.width ?? 1, height: media.height ?? 1 }));
+  const cardImages = [primaryImage, ...extraImages];
   return {
     id: row.id,
     slug: row.slug,
@@ -77,7 +91,8 @@ function summaryFromRow(input: unknown): ProductSummaryDTO {
     // straight from the view's precomputed column rather than re-derived here, so
     // there is exactly one place (public.offer_price_for in SQL) doing the arithmetic.
     pricing: { currency: row.currency, listCents: row.base_price_cents, saleCents: row.offer_price_cents ?? row.sale_price_cents, effectiveCents: row.effective_price_cents, offer },
-    primaryImage: mediaImageDto({ id: row.media_id, storageKey: row.storage_key, alt: row.alt_text, width: row.width ?? 1, height: row.height ?? 1 }),
+    primaryImage,
+    cardImages,
     colors: row.colors.map((color) => ({ id: color.id, name: color.name, slug: color.slug, hex: color.hex })),
     defaultVariantId: defaultColor?.variantId ?? null,
     rating: { average: row.aggregate_rating, count: row.review_count },
@@ -380,7 +395,7 @@ function backfillTo(primary: ProductSummaryDTO[], pool: ProductSummaryDTO[], tar
 
 export async function getHome(): Promise<HomeDTO> {
   if (!getPublicSupabaseConfig()) return staticHome();
-  const [categories, bestsellers, newArrivals, saleProducts, featuredPool, heroBannerRows, saleBanner] = await Promise.all([
+  const [categories, bestsellers, newArrivals, saleProducts, featuredPool, heroBannerRows, saleBanner, offerProducts, offers] = await Promise.all([
     listCategories(),
     listProducts({ bestseller: true, sort: "featured", limit: 4 }),
     listProducts({ isNew: true, sort: "newest", limit: 4 }),
@@ -388,6 +403,8 @@ export async function getHome(): Promise<HomeDTO> {
     listProducts({ sort: "featured", limit: 24 }),
     listActiveHeroBanners(),
     getContentBlock("home.sale-banner"),
+    listProducts({ offer: true, sort: "featured", limit: 4 }),
+    listActiveOffers(),
   ]);
   const fallback = staticHome();
   const blockImage = (block: { media_assets: unknown } | null) => {
@@ -409,6 +426,8 @@ export async function getHome(): Promise<HomeDTO> {
     newArrivals: backfillTo(newArrivals.items, featuredPool.items, 4),
     saleProducts: saleProducts.items,
     featured: featuredPool.items.slice(0, 8),
+    offers,
+    offerProducts: offerProducts.items,
     serviceMessages: fallback.serviceMessages,
   };
 }

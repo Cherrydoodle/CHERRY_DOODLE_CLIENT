@@ -1,3 +1,5 @@
+import type { OfferSummaryDTO } from "@/features/offers/repository";
+
 export type Availability = "in_stock" | "low_stock" | "out_of_stock";
 
 export type ImageDTO = {
@@ -28,6 +30,8 @@ export type ProductSummaryDTO = {
   label: string;
   pricing: MoneyDTO;
   primaryImage: ImageDTO;
+  /** primaryImage first, plus up to 3 more gallery images, for the card's rotating view. */
+  cardImages: ImageDTO[];
   colors: ColorDTO[];
   /** The first in-stock variant, for one-click "quick add" flows that don't show a color picker. */
   defaultVariantId: string | null;
@@ -114,5 +118,9 @@ export type HomeDTO = {
   newArrivals: ProductSummaryDTO[];
   saleProducts: ProductSummaryDTO[];
   featured: ProductSummaryDTO[];
+  /** Live offer campaigns, highest priority first. Empty when nothing is running. */
+  offers: OfferSummaryDTO[];
+  /** Up to 4 products carrying a live offer price, for the home Offers section. */
+  offerProducts: ProductSummaryDTO[];
   serviceMessages: Array<{ title: string; body: string; emoji: string }>;
 };

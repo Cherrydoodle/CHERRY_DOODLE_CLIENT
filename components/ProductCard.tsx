@@ -1,13 +1,12 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { Heart, ShoppingBag } from "lucide-react";
 import { useState } from "react";
 
+import { ProductCardImages } from "@/components/ProductCardImages";
 import type { ProductSummaryDTO } from "@/features/catalog/types";
 import { formatMoney } from "@/lib/format";
-import { shimmerPlaceholder } from "@/lib/image/shimmer";
 import { useShop } from "@/lib/store";
 
 export function ProductBadges({ badges }: { badges: ProductSummaryDTO["badges"] }) {
@@ -43,15 +42,7 @@ export function ProductCard({ product }: { product: ProductSummaryDTO }) {
     <div className="card-soft group relative flex flex-col overflow-hidden">
       <div className="relative block aspect-square bg-blush overflow-hidden">
         <Link href={`/product/${product.slug}`} className="relative block h-full w-full" aria-label={`View ${product.name}`}>
-          <Image
-            src={product.primaryImage.urls.card}
-            alt={product.primaryImage.alt}
-            fill
-            sizes="(min-width: 1024px) 25vw, 50vw"
-            placeholder="blur"
-            blurDataURL={shimmerPlaceholder(800, 800)}
-            className="object-cover transition-transform duration-500 group-hover:scale-105"
-          />
+          <ProductCardImages images={product.cardImages} />
         </Link>
         <ProductBadges badges={product.badges} />
         <button

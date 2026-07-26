@@ -1,20 +1,34 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Tag } from "lucide-react";
 
 import { getHome, listReels } from "@/features/catalog/repository";
 import { getStoreIdentity } from "@/features/store/identity";
 import { HeroSlider } from "@/components/HeroSlider";
 import { ProductCard } from "@/components/ProductCard";
 import { ReelsSection } from "@/components/ReelsSection";
+import { formatEndsDate } from "@/lib/format";
 import { shimmerPlaceholder } from "@/lib/image/shimmer";
 
 export default async function Home() {
   const [home, reels, identity] = await Promise.all([getHome(), listReels(), getStoreIdentity()]);
+  const hasOffers = home.offerProducts.length > 0;
+  const topCampaign = home.offers[0] ?? null;
 
   return (
     <div>
       <HeroSlider banners={home.heroBanners} />
+
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 mt-6 flex flex-wrap justify-center gap-3">
+        {hasOffers && (
+          <Link href="/offers" className="btn-primary">
+            <Tag className="h-4 w-4" /> Shop the Offers
+          </Link>
+        )}
+        <Link href="/collections/all" className="btn-ghost-pink">
+          Shop All
+        </Link>
+      </div>
 
       <section className="mx-auto max-w-7xl px-4 sm:px-6 mt-16">
         <div className="flex items-end justify-between mb-6">
@@ -54,8 +68,29 @@ export default async function Home() {
         </div>
       </section>
 
+      {hasOffers && (
+        <section className="mx-auto max-w-7xl px-4 sm:px-6 mt-16">
+          <SectionHeader
+            title="Offers"
+            subtitle={
+              topCampaign
+                ? [
+                    topCampaign.discountPercent !== null ? `${topCampaign.name} · ${topCampaign.discountPercent}% off` : topCampaign.name,
+                    formatEndsDate(topCampaign.endsAt),
+                  ].filter(Boolean).join(" · ")
+                : "Limited-time prices on picks we love."
+            }
+            actionHref="/offers"
+            actionLabel="View all offers"
+          />
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+            {home.offerProducts.map((product) => <ProductCard key={product.id} product={product} />)}
+          </div>
+        </section>
+      )}
+
       <section className="mx-auto max-w-7xl px-4 sm:px-6 mt-16">
-        <SectionHeader title="Bestsellers" subtitle="Everyone's favorites this month" />
+        <SectionHeader title="Bestsellers" subtitle="Everyone's favorites this month" actionHref="/collections/all?bestseller=true" actionLabel="View all" />
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
           {home.bestsellers.map((product) => <ProductCard key={product.id} product={product} />)}
         </div>
@@ -84,20 +119,37 @@ export default async function Home() {
       </section>
 
       <section className="mx-auto max-w-7xl px-4 sm:px-6 mt-16">
-        <SectionHeader title="New Arrivals" subtitle="Fresh drops for your desk" />
+        <SectionHeader title="New Arrivals" subtitle="Fresh drops for your desk" actionHref="/collections/all?new=true" actionLabel="View all" />
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
           {home.newArrivals.map((product) => <ProductCard key={product.id} product={product} />)}
         </div>
       </section>
 
       <section className="mx-auto max-w-7xl px-4 sm:px-6 mt-16">
-        <SectionHeader title="Featured for you" subtitle="Handpicked cute finds" />
+        <SectionHeader title="Featured for you" subtitle="Handpicked cute finds" actionHref="/collections/all" actionLabel="Shop All" />
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
           {home.featured.map((product) => <ProductCard key={product.id} product={product} />)}
         </div>
       </section>
 
       <ReelsSection reels={reels} instagramUrl={identity.instagram} />
+
+      <section className="mx-auto max-w-7xl px-4 sm:px-6 mt-16">
+        <div className="rounded-[2rem] bg-gradient-to-r from-cherry to-primary p-8 sm:p-12 text-white shadow-pillow text-center">
+          <h3 className="font-display text-3xl sm:text-4xl font-black">Explore the whole shop</h3>
+          <p className="mt-2 text-white/90">Every category, every color, all in one place.</p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <Link href="/collections/all" className="inline-flex items-center gap-2 bg-white text-cherry font-bold rounded-full px-6 py-3 hover:scale-[1.02] transition">
+              Shop All <ArrowRight className="h-4 w-4" />
+            </Link>
+            {hasOffers && (
+              <Link href="/offers" className="inline-flex items-center gap-2 border-2 border-white/70 text-white font-bold rounded-full px-6 py-3 hover:bg-white/10 transition">
+                Browse Offers
+              </Link>
+            )}
+          </div>
+        </div>
+      </section>
 
       <section className="mx-auto max-w-7xl px-4 sm:px-6 mt-16">
         <div className="rounded-[2rem] bg-blush py-8 px-6 grid sm:grid-cols-3 gap-6 text-center">
@@ -114,13 +166,25 @@ export default async function Home() {
   );
 }
 
-function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
+function SectionHeader({
+  title, subtitle, actionHref, actionLabel,
+}: {
+  title: string;
+  subtitle: string;
+  actionHref?: string;
+  actionLabel?: string;
+}) {
   return (
     <div className="flex items-end justify-between mb-6">
       <div>
         <h2 className="font-display text-3xl sm:text-4xl font-black">{title}</h2>
         <p className="text-muted-foreground mt-1">{subtitle}</p>
       </div>
+      {actionHref && actionLabel && (
+        <Link href={actionHref} className="inline-flex items-center gap-1 text-sm font-bold text-primary hover:underline shrink-0">
+          {actionLabel} <ArrowRight className="h-3.5 w-3.5" />
+        </Link>
+      )}
     </div>
   );
 }

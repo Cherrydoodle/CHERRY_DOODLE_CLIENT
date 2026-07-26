@@ -10,12 +10,8 @@ import { InfiniteProductGrid } from "@/components/InfiniteProductGrid";
 import type { CategoryFacets } from "@/features/catalog/repository";
 import type { CategoryDTO, ProductSummaryDTO } from "@/features/catalog/types";
 import type { OfferSummaryDTO } from "@/features/offers/repository";
+import { formatEndsDate } from "@/lib/format";
 import type { OffersFilters, SortOption } from "@/lib/offers-filters";
-
-function endsLabel(endsAt: string | null) {
-  if (!endsAt) return null;
-  return `Ends ${new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).format(new Date(endsAt))}`;
-}
 
 function CampaignStrip({ campaigns }: { campaigns: OfferSummaryDTO[] }) {
   if (campaigns.length === 0) return null;
@@ -36,7 +32,7 @@ function CampaignStrip({ campaigns }: { campaigns: OfferSummaryDTO[] }) {
             <div className="font-display text-lg font-bold leading-tight line-clamp-1">{campaign.name}</div>
             <div className="text-xs opacity-90 mt-0.5">
               {campaign.productCount} {campaign.productCount === 1 ? "product" : "products"}
-              {endsLabel(campaign.endsAt) ? ` · ${endsLabel(campaign.endsAt)}` : ""}
+              {formatEndsDate(campaign.endsAt) ? ` · ${formatEndsDate(campaign.endsAt)}` : ""}
             </div>
           </div>
         </div>
