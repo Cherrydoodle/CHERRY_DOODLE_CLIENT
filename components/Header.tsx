@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { useShop } from "@/lib/store";
 import type { CategoryDTO, ImageDTO, MarqueeItemDTO } from "@/features/catalog/types";
-
+import LOGO from "../assets/Logo.png"
 const DEFAULT_MARQUEE: MarqueeItemDTO[] = [
   { id: "default-1", text: "🌸 Free shipping across India on eligible orders", link: null },
   { id: "default-2", text: "💌 New Arrivals just dropped", link: null },
@@ -49,13 +49,10 @@ export function Header({ categories, marquee, storeName, logo }: { categories: C
 
       <div className="mx-auto max-w-7xl px-4 sm:px-6 py-4 grid grid-cols-[1fr_auto] md:grid-cols-[auto_1fr_auto] items-center gap-4">
         <Link href="/" className="flex items-center justify-self-start" aria-label={storeName}>
-          {logo ? (
-            <Image src={logo.urls.detail} alt={logo.alt || storeName} width={logo.width} height={logo.height} className="h-12 w-auto object-contain sm:h-16" priority />
-          ) : (
-            <span className="font-display text-2xl sm:text-3xl font-black text-primary tracking-tight">
-              cherry<span className="text-cherry">·</span>doodle
-            </span>
-          )}
+
+
+          <Image src={LOGO} alt={storeName} width={100} height={100} className="" priority />
+
         </Link>
 
         <div className="hidden md:flex flex-1 max-w-xl mx-6">
