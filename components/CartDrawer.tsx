@@ -7,7 +7,7 @@ import { Minus, Plus, ShoppingBag, Trash2 } from "lucide-react";
 import type { MouseEvent } from "react";
 
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, variantOptionLabel } from "@/lib/format";
 import { shimmerPlaceholder } from "@/lib/image/shimmer";
 import { useShop } from "@/lib/store";
 
@@ -69,7 +69,7 @@ export function CartDrawer() {
                       <Link href={productHref} onClick={(event) => navigate(event, productHref)} className="font-display font-bold text-sm hover:text-primary line-clamp-2">
                         {item.product.name}
                       </Link>
-                      <div className="text-xs text-muted-foreground mt-0.5">{item.variant.color.name}</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">{variantOptionLabel(item.variant)}</div>
                       <div className="mt-2 flex items-center gap-2">
                         <div className="inline-flex items-center bg-muted rounded-full">
                           <button type="button" onClick={() => updateCartQuantity(item.id, item.quantity - 1)} disabled={item.quantity <= 1} className="h-7 w-7 grid place-items-center rounded-full hover:bg-blush disabled:opacity-40" aria-label="Decrease quantity">

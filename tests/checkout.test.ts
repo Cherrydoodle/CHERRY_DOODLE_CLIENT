@@ -1,9 +1,30 @@
 import { createHmac } from "node:crypto";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { checkoutConfirmationSchema, checkoutStartSchema, checkoutVerifySchema, razorpayWebhookSchema } from "@/features/checkout/schemas";
 import { verifyRazorpayPaymentSignature, verifyRazorpayWebhookSignature } from "@/features/checkout/razorpay";
+
+// Mirrors the query-builder mock pattern in tests/offers-pricing.test.ts.
+type TableResult = { data: unknown; error: unknown };
+type TableHandler = () => TableResult;
+const tableHandlers: Partial<Record<string, TableHandler>> = {};
+
+function createQueryBuilder(table: string): Record<string, unknown> {
+  const builder: Record<string, unknown> = {};
+  for (const method of ["select", "in", "eq", "is", "order"]) builder[method] = () => builder;
+  const resolve = (): TableResult => (tableHandlers[table]?.() ?? { data: null, error: null });
+  builder.then = (onFulfilled?: (v: TableResult) => unknown, onRejected?: (r: unknown) => unknown) =>
+    Promise.resolve(resolve()).then(onFulfilled, onRejected);
+  return builder;
+}
+
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminSupabaseClient: () => ({ from: (table: string) => createQueryBuilder(table) }),
+}));
+vi.mock("@/features/offers/pricing", () => ({ resolveOfferPrices: async () => new Map() }));
+
+const { resolveCheckoutLines } = await import("@/features/checkout/service");
 
 const validCheckout = {
   customer: { name: "Asha Kumar", email: "ASHA@example.com", phone: "+91 98765 43210" },
@@ -235,5 +256,69 @@ describe("Razorpay signatures", () => {
     const lossy = Buffer.from(new TextDecoder().decode(invalidUtf8), "utf8");
     expect(lossy.equals(invalidUtf8)).toBe(false);
     expect(verifyRazorpayWebhookSignature(lossy, signature, secret)).toBe(false);
+  });
+});
+
+// Regression test for a bug found while implementing 202607260001_variant_labels_and_media.sql:
+// resolveCheckoutLines used to match a checkout line by color name/slug only. That was safe
+// exactly as long as (product_id, color_id) was unique -- which product_variants_active_color_idx
+// guaranteed. Once that constraint was relaxed to (product_id, color_id, lower(label)) so two
+// variants can share a color (e.g. three book covers all in "Cherry"), color-only matching became
+// ambiguous: it silently resolves to whichever matching variant happens to sort first, which means
+// a customer could be charged for and shipped a different item than the one they selected. The fix
+// is to resolve by the exact variantId whenever the client supplies one.
+describe("resolveCheckoutLines variant resolution (regression: same-color, different-label variants)", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(tableHandlers)) delete tableHandlers[key];
+  });
+
+  const product = {
+    id: "prod-1", slug: "dreamy-diary", name: "Dreamy Diary",
+    base_price_cents: 50000, sale_price_cents: null, currency: "INR", status: "published", deleted_at: null,
+  };
+  // Two variants sharing one color, distinguished only by label -- impossible before
+  // the migration above, and exactly the case that made color-only matching ambiguous.
+  const galaxyVariant = {
+    id: "variant-galaxy", product_id: "prod-1", sku: "DIARY-CHERRY-GALAXY", label: "Galaxy Theme",
+    stock_quantity: 10, is_active: true, deleted_at: null, sort_order: 0,
+    colors: { name: "Cherry", slug: "cherry" },
+  };
+  const moonVariant = {
+    id: "variant-moon", product_id: "prod-1", sku: "DIARY-CHERRY-MOON", label: "Moon Theme",
+    stock_quantity: 10, is_active: true, deleted_at: null, sort_order: 1,
+    colors: { name: "Cherry", slug: "cherry" },
+  };
+
+  it("resolves the exact requested variant by id, even when an earlier-sorted variant shares its color", async () => {
+    tableHandlers.products = () => ({ data: [product], error: null });
+    tableHandlers.product_variants = () => ({ data: [galaxyVariant, moonVariant], error: null });
+
+    const resolved = await resolveCheckoutLines({
+      items: [{ productSlug: "dreamy-diary", variantId: "variant-moon", quantity: 1 }],
+    } as never);
+
+    expect(resolved.lines).toHaveLength(1);
+    expect(resolved.lines[0].productVariantId).toBe("variant-moon");
+    expect(resolved.lines[0].variantLabel).toBe("Moon Theme");
+  });
+
+  it("without a variantId, color-only matching is ambiguous and always picks the first sorted match -- exactly the bug this fix closes", async () => {
+    tableHandlers.products = () => ({ data: [product], error: null });
+    tableHandlers.product_variants = () => ({ data: [galaxyVariant, moonVariant], error: null });
+
+    const resolved = await resolveCheckoutLines({
+      items: [{ productSlug: "dreamy-diary", color: "Cherry", quantity: 1 }],
+    } as never);
+
+    expect(resolved.lines[0].productVariantId).toBe("variant-galaxy");
+  });
+
+  it("rejects a variantId that does not belong to the requested product", async () => {
+    tableHandlers.products = () => ({ data: [product], error: null });
+    tableHandlers.product_variants = () => ({ data: [galaxyVariant], error: null });
+
+    await expect(resolveCheckoutLines({
+      items: [{ productSlug: "dreamy-diary", variantId: "does-not-exist", quantity: 1 }],
+    } as never)).rejects.toThrow();
   });
 });

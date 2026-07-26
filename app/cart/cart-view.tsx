@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Minus, Plus, ShoppingBag, Trash2 } from "lucide-react";
 
 import type { CartDTO } from "@/features/cart/types";
-import { formatMoney } from "@/lib/format";
+import { formatMoney, variantOptionLabel } from "@/lib/format";
 import { shimmerPlaceholder } from "@/lib/image/shimmer";
 import { useShop } from "@/lib/store";
 
@@ -45,7 +45,7 @@ export function CartView() {
               <div className="min-w-0">
                 <Link href={`/product/${item.product.slug}`} className="font-display font-bold hover:text-primary line-clamp-2">{item.product.name}</Link>
                 <div className="text-xs text-muted-foreground mt-1">
-                  {item.variant.color.name} • {item.product.label}
+                  {variantOptionLabel(item.variant)} • {item.product.label}
                 </div>
                 {item.warning && <p className="mt-1 text-xs font-semibold text-sale">{warningCopy[item.warning]}</p>}
                 <div className="mt-3 flex items-center gap-3">

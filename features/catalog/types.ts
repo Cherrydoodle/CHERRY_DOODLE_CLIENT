@@ -45,7 +45,10 @@ export type ProductDetailDTO = ProductSummaryDTO & {
   variants: Array<{
     id: string;
     sku: string;
+    label: string;
     color: ColorDTO;
+    /** This variant's own images, if any were assigned in admin. Empty when it shares the product's default gallery. */
+    images: ImageDTO[];
     availability: Availability;
     maxQuantity: number;
   }>;

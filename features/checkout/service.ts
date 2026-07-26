@@ -41,6 +41,7 @@ type RawVariant = {
   id: string;
   product_id: string;
   sku: string;
+  label: string;
   stock_quantity: number;
   is_active: boolean;
   deleted_at: string | null;
@@ -54,6 +55,7 @@ type ResolvedLine = {
   productSlug: string;
   productName: string;
   color: string;
+  variantLabel: string;
   sku: string;
   quantity: number;
   listUnitPriceMinor: number;
@@ -96,7 +98,7 @@ function colorMatches(color: RawColor, requested?: string) {
   return color.name.toLowerCase() === normalized || color.slug.toLowerCase() === normalized;
 }
 
-async function resolveCheckoutLines(input: CheckoutStartInput) {
+export async function resolveCheckoutLines(input: CheckoutStartInput) {
   const admin = createAdminSupabaseClient();
   const slugs = [...new Set(input.items.map((item) => item.productSlug))];
   const { data: productRows, error: productsError } = await admin
@@ -117,7 +119,7 @@ async function resolveCheckoutLines(input: CheckoutStartInput) {
   const [{ data: variantRows, error: variantsError }, offers] = await Promise.all([
     admin
       .from("product_variants")
-      .select("id,product_id,sku,stock_quantity,is_active,deleted_at,sort_order,colors(name,slug)")
+      .select("id,product_id,sku,label,stock_quantity,is_active,deleted_at,sort_order,colors(name,slug)")
       .in("product_id", productIds)
       .eq("is_active", true)
       .is("deleted_at", null)
@@ -141,10 +143,16 @@ async function resolveCheckoutLines(input: CheckoutStartInput) {
     if (currency && currency !== product.currency) throw new ApiError(422, "MIXED_CURRENCY_CART", "All checkout items must use the same currency.");
     currency = product.currency;
 
-    const variant = (variantsByProduct.get(product.id) ?? []).find((candidate) => {
-      const color = one(candidate.colors);
-      return color && colorMatches(color, requested.color);
-    });
+    const candidates = variantsByProduct.get(product.id) ?? [];
+    // variantId is authoritative when supplied -- it is the only unambiguous match once
+    // two variants can share a color (202607260001_variant_labels_and_media.sql). color
+    // is only consulted as a fallback for older in-flight clients.
+    const variant = requested.variantId
+      ? candidates.find((candidate) => candidate.id === requested.variantId)
+      : candidates.find((candidate) => {
+          const color = one(candidate.colors);
+          return color && colorMatches(color, requested.color);
+        });
     if (!variant) throw new ApiError(422, "VARIANT_UNAVAILABLE", `The selected option for ${product.name} is unavailable.`);
     const color = one(variant.colors);
     const existing = linesByVariant.get(variant.id);
@@ -157,6 +165,7 @@ async function resolveCheckoutLines(input: CheckoutStartInput) {
       productSlug: product.slug,
       productName: product.name,
       color: color.name,
+      variantLabel: variant.label,
       sku: variant.sku,
       quantity,
       listUnitPriceMinor: product.base_price_cents,
@@ -252,6 +261,8 @@ export async function startRazorpayCheckout(input: CheckoutStartInput, authConte
     product_variant_id: line.productVariantId,
     product_name: line.productName,
     sku: line.sku,
+    variant_label: line.variantLabel,
+    color_name: line.color,
     quantity: line.quantity,
     list_unit_price_minor: line.listUnitPriceMinor,
     unit_price_minor: line.unitPriceMinor,

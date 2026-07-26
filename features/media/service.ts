@@ -134,15 +134,16 @@ export async function listMedia(options: { status?: string; purpose?: string; li
 
 export async function requestMediaDeletion(mediaId: string, actor: Actor) {
   const admin = createAdminSupabaseClient();
-  const [productRefs, categoryRefs, contentRefs, profileRefs, settingsRefs, customizationRefs] = await Promise.all([
+  const [productRefs, variantRefs, categoryRefs, contentRefs, profileRefs, settingsRefs, customizationRefs] = await Promise.all([
     admin.from("product_media").select("*", { count: "exact", head: true }).eq("media_asset_id", mediaId),
+    admin.from("product_variant_media").select("*", { count: "exact", head: true }).eq("media_asset_id", mediaId),
     admin.from("categories").select("*", { count: "exact", head: true }).eq("image_media_id", mediaId).is("deleted_at", null),
     admin.from("content_blocks").select("*", { count: "exact", head: true }).eq("media_asset_id", mediaId).is("deleted_at", null),
     admin.from("profiles").select("*", { count: "exact", head: true }).eq("avatar_media_id", mediaId).is("deleted_at", null),
     admin.from("store_settings").select("*", { count: "exact", head: true }).or(`logo_media_id.eq.${mediaId},favicon_media_id.eq.${mediaId}`),
     admin.from("order_item_customizations").select("*", { count: "exact", head: true }).eq("media_asset_id", mediaId),
   ]);
-  if ([productRefs, categoryRefs, contentRefs, profileRefs, settingsRefs, customizationRefs].reduce((sum, result) => sum + (result.count ?? 0), 0) > 0) {
+  if ([productRefs, variantRefs, categoryRefs, contentRefs, profileRefs, settingsRefs, customizationRefs].reduce((sum, result) => sum + (result.count ?? 0), 0) > 0) {
     throw new ApiError(409, "MEDIA_IN_USE", "Detach the media asset before deleting it.");
   }
   const { data: asset } = await admin.from("media_assets").update({ status: "delete_pending", deleted_by: actor.userId }).eq("id", mediaId).is("deleted_at", null).select("storage_key,storage_provider,require_signed_urls,status").maybeSingle();

@@ -92,6 +92,7 @@ export default async function CheckoutSuccessPage({ searchParams }: { searchPara
                   <div className="font-medium">{item.name}</div>
                   <div className="text-muted-foreground">
                     Qty {item.quantity}
+                    {item.variantLabel ? ` · ${item.variantLabel}` : ""}
                     {item.sku ? ` · SKU ${item.sku}` : ""}
                   </div>
                 </div>

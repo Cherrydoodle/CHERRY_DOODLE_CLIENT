@@ -65,7 +65,10 @@ export function ProductCard({ product }: { product: ProductSummaryDTO }) {
         </button>
       </div>
 
-      <div className="p-4 flex flex-col gap-2">
+      {/* flex-1 fills the stretched card height (grid rows default to equal-height
+          siblings), so mt-auto below always pins the button to the same bottom edge
+          regardless of a 1- vs 2-line name or a missing color/sale row. */}
+      <div className="p-4 flex flex-1 flex-col gap-2">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{product.label}</div>
         <Link href={`/product/${product.slug}`} className="font-display text-lg font-bold leading-tight line-clamp-2 hover:text-primary transition">
           {product.name}
@@ -91,7 +94,7 @@ export function ProductCard({ product }: { product: ProductSummaryDTO }) {
             type="button"
             onClick={handleQuickAdd}
             disabled={adding}
-            className="mt-2 flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground shadow-pillow transition hover:brightness-105 disabled:opacity-60"
+            className="mt-auto flex items-center justify-center gap-2 rounded-2xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground shadow-pillow transition hover:brightness-105 disabled:opacity-60"
           >
             <ShoppingBag className="h-4 w-4" />
             {adding ? "Adding…" : "Add to Cart"}

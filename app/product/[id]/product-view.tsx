@@ -18,11 +18,13 @@ export function ProductView({ product }: { product: ProductDetailDTO }) {
   const [added, setAdded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { addToCart, toggleWishlist, isWished } = useShop();
-  const gallery = product.gallery.length ? product.gallery : [product.primaryImage];
   const [main, setMain] = useState(0);
 
   const variant = product.variants.find((item) => item.id === variantId) ?? product.variants[0];
   const outOfStock = !variant || variant.availability === "out_of_stock";
+  // A variant with its own images swaps the whole gallery; otherwise it falls back
+  // to the product's shared gallery, unchanged from before variants had images.
+  const gallery = variant?.images.length ? variant.images : product.gallery.length ? product.gallery : [product.primaryImage];
 
   useEffect(() => {
     const price = product.pricing.saleCents ?? product.pricing.listCents;
@@ -97,24 +99,26 @@ export function ProductView({ product }: { product: ProductDetailDTO }) {
           <p className="mt-5 text-muted-foreground leading-relaxed">{product.description}</p>
 
           <div className="mt-6">
-            <div className="text-sm font-semibold mb-2">Color: <span className="text-muted-foreground">{variant?.color.name ?? "Unavailable"}</span></div>
+            <div className="text-sm font-semibold mb-2">Option: <span className="text-muted-foreground">{variant?.label ?? "Unavailable"}</span></div>
             <div className="flex gap-2 flex-wrap">
               {product.variants.map((option) => (
                 <button
                   type="button"
                   key={option.id}
-                  onClick={() => { setVariantId(option.id); setQty(1); }}
+                  onClick={() => { setVariantId(option.id); setQty(1); setMain(0); }}
                   disabled={option.availability === "out_of_stock"}
-                  className={`h-10 w-10 rounded-full border-2 disabled:opacity-30 disabled:cursor-not-allowed ${variantId === option.id ? "border-primary ring-2 ring-primary/30" : "border-border"}`}
-                  style={{ background: option.color.hex }}
-                  title={option.availability === "out_of_stock" ? `${option.color.name} (out of stock)` : option.color.name}
-                  aria-label={option.color.name}
+                  className={`flex items-center gap-2 rounded-full border-2 px-3 py-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${variantId === option.id ? "border-primary ring-2 ring-primary/30" : "border-border"}`}
+                  title={option.availability === "out_of_stock" ? `${option.label} (out of stock)` : option.label}
+                  aria-label={option.label}
                   aria-pressed={variantId === option.id}
-                />
+                >
+                  <span className="h-4 w-4 shrink-0 rounded-full border border-border/40" style={{ background: option.color.hex }} />
+                  <span className="text-xs font-semibold">{option.label}</span>
+                </button>
               ))}
             </div>
             {variant?.availability === "low_stock" && (
-              <p className="mt-2 text-xs font-semibold text-sale">Only a few left in this color.</p>
+              <p className="mt-2 text-xs font-semibold text-sale">Only a few left in this option.</p>
             )}
           </div>
 
@@ -162,7 +166,7 @@ export function ProductView({ product }: { product: ProductDetailDTO }) {
               <ul className="space-y-1 text-sm text-muted-foreground">
                 <li><strong className="text-foreground">Material:</strong> {product.material}</li>
                 <li><strong className="text-foreground">Size:</strong> {product.size}</li>
-                <li><strong className="text-foreground">Colors:</strong> {product.variants.map((option) => option.color.name).join(", ")}</li>
+                <li><strong className="text-foreground">Options:</strong> {product.variants.map((option) => option.label).join(", ")}</li>
                 <li>Made for school, journaling, desk setup, and gifting.</li>
                 <li>Cute Korean-inspired stationery style.</li>
               </ul>

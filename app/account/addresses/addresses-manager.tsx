@@ -2,6 +2,16 @@
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 type Address = {
   id: string; label: string; recipientName: string; phoneNumber: string; line1: string; line2: string | null;
@@ -23,6 +33,7 @@ export function AddressesManager() {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<Address | null>(null);
 
   const load = async () => {
     try {
@@ -111,7 +122,6 @@ export function AddressesManager() {
   };
 
   const remove = async (address: Address) => {
-    if (!window.confirm(`Delete the "${address.label}" address?`)) return;
     setError(null);
     try {
       const response = await fetch(`/api/v1/me/addresses/${address.id}`, {
@@ -123,6 +133,8 @@ export function AddressesManager() {
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The address could not be deleted.");
+    } finally {
+      setPendingDelete(null);
     }
   };
 
@@ -167,7 +179,7 @@ export function AddressesManager() {
                 <div className="mt-4 flex flex-wrap gap-3 text-sm">
                   <button type="button" onClick={() => setEditingId(address.id)} className="btn-ghost-pink">Edit</button>
                   {!address.isDefault && <button type="button" onClick={() => setDefault(address)} className="btn-ghost-pink">Set as default</button>}
-                  <button type="button" onClick={() => remove(address)} className="btn-ghost-pink text-destructive">Delete</button>
+                  <button type="button" onClick={() => setPendingDelete(address)} className="btn-ghost-pink text-destructive">Delete</button>
                 </div>
               </>
             )}
@@ -184,6 +196,21 @@ export function AddressesManager() {
           <button type="button" onClick={() => setAdding(true)} className="btn-primary">Add new address</button>
         )}
       </div>
+
+      <AlertDialog open={pendingDelete !== null} onOpenChange={(open) => { if (!open) setPendingDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete address</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete && `Delete the "${pendingDelete.label}" address? This cannot be undone.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => pendingDelete && remove(pendingDelete)}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

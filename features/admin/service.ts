@@ -8,8 +8,9 @@ import { ApiError } from "@/lib/http/problem";
 import { logger } from "@/lib/observability/logger";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { mediaImageDto } from "@/features/media/delivery";
+import { requestMediaDeletion } from "@/features/media/service";
 import type {
-  attachMediaSchema, categoryCreateSchema, categoryUpdateSchema, contentCreateSchema, contentUpdateSchema,
+  attachMediaSchema, attachVariantMediaSchema, categoryCreateSchema, categoryUpdateSchema, contentCreateSchema, contentUpdateSchema,
   productCreateCompleteSchema, productUpdateSchema, roleUpdateSchema, variantCreateSchema, variantUpdateSchema,
 } from "@/features/admin/schemas";
 
@@ -20,6 +21,7 @@ type ProductUpdate = z.infer<typeof productUpdateSchema>;
 type VariantCreate = z.infer<typeof variantCreateSchema>;
 type VariantUpdate = z.infer<typeof variantUpdateSchema>;
 type AttachMedia = z.infer<typeof attachMediaSchema>;
+type AttachVariantMedia = z.infer<typeof attachVariantMediaSchema>;
 type ContentCreate = z.infer<typeof contentCreateSchema>;
 type ContentUpdate = z.infer<typeof contentUpdateSchema>;
 type RoleUpdate = z.infer<typeof roleUpdateSchema>;
@@ -135,6 +137,12 @@ export async function deleteCategory(id: string, expectedVersion: number, actor:
   if (!data) throw new ApiError(409, "VERSION_CONFLICT", "Category was changed by another user.");
   await audit(actor, "category.delete", "category", id, beforeResult.data, null, requestId);
   revalidateTag("categories", { expire: 0 });
+  const imageMediaId = beforeResult.data.image_media_id as string | null;
+  if (imageMediaId) {
+    await requestMediaDeletion(imageMediaId, actor).catch((error) => {
+      logger.error("media_cleanup_failed", { mediaId: imageMediaId, resourceType: "category", resourceId: id, error: error instanceof Error ? error.message : String(error) });
+    });
+  }
 }
 
 function productPatch(input: Partial<ProductUpdate>, actor: AuthContext) {
@@ -187,7 +195,7 @@ export async function getAdminProduct(id: string) {
   const admin = createAdminSupabaseClient();
   const { data, error } = await admin.from("products").select(`
     *,product_categories(category_id,is_primary,categories(id,slug,name,parent_id,is_active,deleted_at)),product_badges(badge),
-    product_variants(id,color_id,sku,stock_quantity,low_stock_threshold,is_active,sort_order,version,deleted_at,colors(id,name,slug,hex_code)),
+    product_variants(id,color_id,label,sku,stock_quantity,low_stock_threshold,is_active,sort_order,version,deleted_at,colors(id,name,slug,hex_code),product_variant_media(media_asset_id,position)),
     product_media(media_asset_id,position,is_primary,alt_text_override,media_assets(id,status,purpose,storage_key,storage_provider,alt_text,width,height))
   `).eq("id", id).maybeSingle();
   if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Product could not be loaded.");
@@ -215,7 +223,7 @@ export async function createProduct(input: ProductCreateComplete, actor: AuthCon
     p_material: input.material, p_size: input.size, p_base_price_cents: input.basePriceCents,
     p_sale_price_cents: input.salePriceCents, p_featured_sort_order: input.featuredSortOrder ?? null,
     p_allow_custom_image: input.allowCustomImage ?? false, p_primary_category_id: input.primaryCategoryId,
-    p_badges: input.badges, p_color_id: input.variant.colorId, p_sku: input.variant.sku,
+    p_badges: input.badges, p_color_id: input.variant.colorId, p_variant_label: input.variant.label, p_sku: input.variant.sku,
     p_stock_quantity: input.variant.stockQuantity, p_low_stock_threshold: input.variant.lowStockThreshold,
     p_media_id: input.mediaId ?? null, p_actor_id: actor.userId,
   });
@@ -292,12 +300,43 @@ export async function deleteProduct(id: string, expectedVersion: number, actor: 
   if (!data) throw new ApiError(409, "VERSION_CONFLICT", "Product was changed by another user.");
   await audit(actor, "product.delete", "product", id, before, null, requestId);
   revalidateTag("products", { expire: 0 });
+  // Soft-delete the product's own variants too. Deleting the product alone left their
+  // deleted_at null forever, which kept their SKUs "live" under the SKU uniqueness index
+  // and blocked recreating a product with the same name/variants (409 VARIANT_EXISTS).
+  await admin.from("product_variants").update({ is_active: false, deleted_at: new Date().toISOString() }).eq("product_id", id).is("deleted_at", null);
+  await cleanupProductMedia(admin, id, before, actor);
+}
+
+// Gathers every media asset attached to a product's gallery and its variants' galleries,
+// detaches them (the join rows are pure associations -- order_items already snapshot
+// variant_label/color_name/sku as immutable text independent of these tables), then
+// asks requestMediaDeletion to destroy each Cloudinary asset that's no longer referenced
+// anywhere else. Failures here must never fail the caller's delete -- they fall back to
+// the media-cleanup cron via requestMediaDeletion's own delete_pending/retry handling.
+async function cleanupProductMedia(
+  admin: ReturnType<typeof createAdminSupabaseClient>,
+  productId: string,
+  before: { product_media?: Array<{ media_asset_id: string }>; product_variants?: Array<{ id: string; product_variant_media?: Array<{ media_asset_id: string }> }> },
+  actor: AuthContext,
+) {
+  const variantIds = (before.product_variants ?? []).map((variant) => variant.id);
+  const mediaIds = new Set<string>();
+  for (const item of before.product_media ?? []) mediaIds.add(item.media_asset_id);
+  for (const variant of before.product_variants ?? []) for (const item of variant.product_variant_media ?? []) mediaIds.add(item.media_asset_id);
+  if (mediaIds.size === 0) return;
+  await admin.from("product_media").delete().eq("product_id", productId);
+  if (variantIds.length) await admin.from("product_variant_media").delete().in("product_variant_id", variantIds);
+  await Promise.all([...mediaIds].map((mediaId) =>
+    requestMediaDeletion(mediaId, actor).catch((error) => {
+      logger.error("media_cleanup_failed", { mediaId, resourceType: "product", resourceId: productId, error: error instanceof Error ? error.message : String(error) });
+    })
+  ));
 }
 
 export async function createVariant(productId: string, input: VariantCreate, actor: AuthContext, requestId: string) {
   const admin = createAdminSupabaseClient();
   await getAdminProduct(productId);
-  const { data, error } = await admin.from("product_variants").insert({ product_id: productId, color_id: input.colorId, sku: input.sku, stock_quantity: input.stockQuantity, low_stock_threshold: input.lowStockThreshold ?? 5, sort_order: input.sortOrder ?? 0 }).select("*").single();
+  const { data, error } = await admin.from("product_variants").insert({ product_id: productId, color_id: input.colorId, label: input.label, sku: input.sku, stock_quantity: input.stockQuantity, low_stock_threshold: input.lowStockThreshold ?? 5, sort_order: input.sortOrder ?? 0 }).select("*").single();
   if (error) throw new ApiError(error.code === "23505" ? 409 : 422, error.code === "23505" ? "VARIANT_EXISTS" : "VALIDATION_ERROR", "Variant could not be created.");
   await audit(actor, "variant.create", "product_variant", data.id, null, data, requestId);
   revalidateTag("products", { expire: 0 });
@@ -308,10 +347,10 @@ export async function updateVariant(productId: string, variantId: string, input:
   const admin = createAdminSupabaseClient();
   const { data: before } = await admin.from("product_variants").select("*").eq("id", variantId).eq("product_id", productId).maybeSingle();
   if (!before) throw new ApiError(404, "NOT_FOUND", "Variant not found.");
-  const { expectedVersion, colorId, stockQuantity, lowStockThreshold, sortOrder, isActive, ...rest } = input;
-  const patch = { ...rest, ...(colorId !== undefined ? { color_id: colorId } : {}), ...(stockQuantity !== undefined ? { stock_quantity: stockQuantity } : {}), ...(lowStockThreshold !== undefined ? { low_stock_threshold: lowStockThreshold } : {}), ...(sortOrder !== undefined ? { sort_order: sortOrder } : {}), ...(isActive !== undefined ? { is_active: isActive } : {}) };
+  const { expectedVersion, colorId, label, stockQuantity, lowStockThreshold, sortOrder, isActive, ...rest } = input;
+  const patch = { ...rest, ...(colorId !== undefined ? { color_id: colorId } : {}), ...(label !== undefined ? { label } : {}), ...(stockQuantity !== undefined ? { stock_quantity: stockQuantity } : {}), ...(lowStockThreshold !== undefined ? { low_stock_threshold: lowStockThreshold } : {}), ...(sortOrder !== undefined ? { sort_order: sortOrder } : {}), ...(isActive !== undefined ? { is_active: isActive } : {}) };
   const { data, error } = await admin.from("product_variants").update(patch).eq("id", variantId).eq("product_id", productId).eq("version", expectedVersion).select("*").maybeSingle();
-  if (error?.code === "23505") throw new ApiError(409, "VARIANT_EXISTS", "SKU or product color already exists.");
+  if (error?.code === "23505") throw new ApiError(409, "VARIANT_EXISTS", "SKU already exists, or this color and label combination is already in use.");
   if (!data) throw new ApiError(409, "VERSION_CONFLICT", "Variant was changed by another user.");
   await audit(actor, "variant.update", "product_variant", variantId, before, data, requestId);
   revalidateTag("products", { expire: 0 });
@@ -323,12 +362,21 @@ export async function deleteVariant(productId: string, variantId: string, expect
   const product = await getAdminProduct(productId);
   const active = product.product_variants?.filter((item: { is_active: boolean; deleted_at: string | null }) => item.is_active && !item.deleted_at) ?? [];
   if (product.status === "published" && active.length <= 1) throw new ApiError(409, "PRODUCT_REQUIRES_VARIANT", "Published product requires an active variant.");
-  const { data: before } = await admin.from("product_variants").select("*").eq("id", variantId).eq("product_id", productId).maybeSingle();
+  const { data: before } = await admin.from("product_variants").select("*,product_variant_media(media_asset_id)").eq("id", variantId).eq("product_id", productId).maybeSingle();
   if (!before) throw new ApiError(404, "NOT_FOUND", "Variant not found.");
   const { data } = await admin.from("product_variants").update({ is_active: false, deleted_at: new Date().toISOString() }).eq("id", variantId).eq("version", expectedVersion).select("id").maybeSingle();
   if (!data) throw new ApiError(409, "VERSION_CONFLICT", "Variant was changed by another user.");
   await audit(actor, "variant.delete", "product_variant", variantId, before, null, requestId);
   revalidateTag("products", { expire: 0 });
+  const mediaIds = ((before as { product_variant_media?: Array<{ media_asset_id: string }> }).product_variant_media ?? []).map((item) => item.media_asset_id);
+  if (mediaIds.length) {
+    await admin.from("product_variant_media").delete().eq("product_variant_id", variantId);
+    await Promise.all(mediaIds.map((mediaId) =>
+      requestMediaDeletion(mediaId, actor).catch((error) => {
+        logger.error("media_cleanup_failed", { mediaId, resourceType: "product_variant", resourceId: variantId, error: error instanceof Error ? error.message : String(error) });
+      })
+    ));
+  }
 }
 
 async function requireActiveCategory(categoryId: string) {
@@ -360,6 +408,30 @@ export async function detachProductMedia(productId: string, mediaId: string, act
   if (product.status === "published" && relation.is_primary) throw new ApiError(409, "PRODUCT_REQUIRES_IMAGE", "Published product requires a primary image.");
   await admin.from("product_media").delete().eq("product_id", productId).eq("media_asset_id", mediaId);
   await audit(actor, "product.media.detach", "product", productId, relation, null, requestId);
+}
+
+// Links an image already in the product's gallery to a specific variant, so selecting
+// that variant on the storefront swaps to its own images instead of the shared gallery.
+// Unlike attachProductMedia, mediaId must already be a product_media row for this
+// product -- there is no separate variant-image upload path.
+export async function attachVariantMedia(productId: string, variantId: string, mediaId: string, input: AttachVariantMedia, actor: AuthContext, requestId: string) {
+  const admin = createAdminSupabaseClient();
+  const product = await getAdminProduct(productId);
+  const variant = product.product_variants?.find((item: { id: string }) => item.id === variantId);
+  if (!variant) throw new ApiError(404, "NOT_FOUND", "Variant not found.");
+  const inGallery = product.product_media?.some((item: { media_asset_id: string }) => item.media_asset_id === mediaId);
+  if (!inGallery) throw new ApiError(422, "MEDIA_NOT_IN_GALLERY", "Image must already be part of the product's gallery.");
+  const { error } = await admin.from("product_variant_media").upsert({ product_variant_id: variantId, media_asset_id: mediaId, position: input.position }, { onConflict: "product_variant_id,media_asset_id" });
+  if (error) throw new ApiError(409, "POSITION_CONFLICT", "Variant image position is already in use.");
+  await audit(actor, "variant.media.attach", "product_variant", variantId, null, { mediaId, ...input }, requestId);
+  return getAdminProduct(productId);
+}
+
+export async function detachVariantMedia(productId: string, variantId: string, mediaId: string, actor: AuthContext, requestId: string) {
+  const admin = createAdminSupabaseClient();
+  await getAdminProduct(productId);
+  await admin.from("product_variant_media").delete().eq("product_variant_id", variantId).eq("media_asset_id", mediaId);
+  await audit(actor, "variant.media.detach", "product_variant", variantId, { mediaId }, null, requestId);
 }
 
 function contentPatch(input: Partial<ContentCreate>, actor: AuthContext) {
@@ -408,6 +480,12 @@ export async function deleteContentBlock(id: string, expectedVersion: number, ac
   const { data } = await admin.from("content_blocks").update({ deleted_at: new Date().toISOString(), deleted_by: actor.userId, is_active: false }).eq("id", id).eq("version", expectedVersion).select("id").maybeSingle();
   if (!data) throw new ApiError(409, "VERSION_CONFLICT", "Content block was changed by another user.");
   await audit(actor, "content.delete", "content_block", id, before, null, requestId);
+  const mediaAssetId = before.media_asset_id as string | null;
+  if (mediaAssetId) {
+    await requestMediaDeletion(mediaAssetId, actor).catch((error) => {
+      logger.error("media_cleanup_failed", { mediaId: mediaAssetId, resourceType: "content_block", resourceId: id, error: error instanceof Error ? error.message : String(error) });
+    });
+  }
 }
 
 export async function updateUserRole(userId: string, input: RoleUpdate, actor: AuthContext, requestId: string) {

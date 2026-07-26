@@ -24,7 +24,7 @@ type RawProduct = {
   product_media: Array<{ is_primary: boolean; alt_text_override: string | null; media_assets: RawMedia | RawMedia[] }>;
 };
 type RawVariant = {
-  id: string; sku: string; stock_quantity: number; low_stock_threshold: number; is_active: boolean; deleted_at: string | null;
+  id: string; sku: string; label: string; stock_quantity: number; low_stock_threshold: number; is_active: boolean; deleted_at: string | null;
   colors: RawColor | RawColor[]; products: RawProduct | RawProduct[];
 };
 type RawCartItem = { id: string; quantity: number; product_variant_id: string };
@@ -109,7 +109,7 @@ export async function getCartById(cart: CartRecord, owner: "guest" | "user"): Pr
   const variantsById = new Map<string, RawVariant>();
   if (variantIds.length) {
     const { data: variants, error: variantsError } = await admin.from("product_variants").select(`
-      id,sku,stock_quantity,low_stock_threshold,is_active,deleted_at,
+      id,sku,label,stock_quantity,low_stock_threshold,is_active,deleted_at,
       colors(id,name,slug,hex_code),
       products(id,slug,name,label,base_price_cents,sale_price_cents,currency,status,deleted_at,aggregate_rating,review_count,
         product_badges(badge),
@@ -138,7 +138,7 @@ export async function getCartById(cart: CartRecord, owner: "guest" | "user"): Pr
     const warning = unavailable ? "out_of_stock" : item.quantity > variant.stock_quantity ? "quantity_reduced" : null;
     const unit = offer?.offerPriceCents ?? product.sale_price_cents ?? product.base_price_cents;
     dtoItems.push({
-      id: item.id, quantity: item.quantity, variant: { id: variant.id, sku: variant.sku, color: { id: color.id, name: color.name, slug: color.slug, hex: color.hex_code } },
+      id: item.id, quantity: item.quantity, variant: { id: variant.id, sku: variant.sku, label: variant.label, color: { id: color.id, name: color.name, slug: color.slug, hex: color.hex_code } },
       product: productSummary(product, variant, color, offer), unitPriceCents: unit, lineTotalCents: unit * item.quantity,
       originalLineTotalCents: product.base_price_cents * item.quantity, warning,
     });

@@ -2,6 +2,16 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 type Props = { orderId: string; status: string; returnStatus: string };
 
@@ -10,12 +20,13 @@ export function OrderActions({ orderId, status, returnStatus }: Props) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [showReturnForm, setShowReturnForm] = useState(false);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
 
   const canCancel = status === "pending" || status === "processing";
   const canRequestReturn = status === "delivered" && returnStatus === "none";
 
   async function cancelOrder() {
-    if (!window.confirm("Cancel this order? This cannot be undone.")) return;
+    setConfirmingCancel(false);
     setBusy(true);
     setMessage(null);
     try {
@@ -59,7 +70,7 @@ export function OrderActions({ orderId, status, returnStatus }: Props) {
   return (
     <div className="mt-6 rounded-3xl border bg-white p-6 text-sm">
       {canCancel && (
-        <button type="button" onClick={cancelOrder} disabled={busy} className="btn-ghost-pink disabled:opacity-60">
+        <button type="button" onClick={() => setConfirmingCancel(true)} disabled={busy} className="btn-ghost-pink disabled:opacity-60">
           {busy ? "Cancelling…" : "Cancel order"}
         </button>
       )}
@@ -93,6 +104,19 @@ export function OrderActions({ orderId, status, returnStatus }: Props) {
       )}
 
       <p className="mt-3 text-muted-foreground" aria-live="polite">{message}</p>
+
+      <AlertDialog open={confirmingCancel} onOpenChange={setConfirmingCancel}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel order</AlertDialogTitle>
+            <AlertDialogDescription>Cancel this order? This cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep order</AlertDialogCancel>
+            <AlertDialogAction onClick={cancelOrder}>Cancel order</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -40,7 +40,7 @@ export function ContactForm() {
     "w-full rounded-2xl border border-border bg-white px-4 py-2.5 text-sm outline-none focus:border-primary";
 
   return (
-    <form className="space-y-4" onSubmit={submit} noValidate>
+    <form className="space-y-4" onSubmit={submit}>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <label htmlFor="contact-name" className="text-sm font-medium">Name</label>
