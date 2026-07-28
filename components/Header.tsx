@@ -47,15 +47,28 @@ export function Header({ categories, marquee, storeName, logo }: { categories: C
     <header className="sticky top-0 z-40 bg-background/85 backdrop-blur border-b border-border/70">
       <MarqueeStrip items={marquee.length > 0 ? marquee : DEFAULT_MARQUEE} />
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 py-4 grid grid-cols-[1fr_auto] md:grid-cols-[auto_1fr_auto] items-center gap-4">
-        <Link href="/" className="flex items-center justify-self-start" aria-label={storeName}>
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 py-2.5 md:py-4 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-6 sm:gap-8">
+          <Link href="/" className="flex items-center shrink-0" aria-label={storeName}>
+            <Image src={LOGO} alt={storeName} width={100} height={100} className="" priority />
+          </Link>
+          <nav aria-label="Primary navigation" className="hidden md:flex items-center gap-4 sm:gap-6 text-sm font-semibold">
+            <Link
+              href="/"
+              className={`hover:text-primary transition ${pathname === "/" ? "text-primary font-bold" : "text-foreground/80"}`}
+            >
+              Home
+            </Link>
+            <Link
+              href="/collections/all"
+              className={`hover:text-primary transition ${pathname.startsWith("/collections/all") ? "text-primary font-bold" : "text-foreground/80"}`}
+            >
+              Shop
+            </Link>
+          </nav>
+        </div>
 
-
-          <Image src={LOGO} alt={storeName} width={100} height={100} className="" priority />
-
-        </Link>
-
-        <div className="hidden md:flex flex-1 max-w-xl mx-6">
+        <div className="hidden md:flex flex-1 max-w-xl mx-4">
           <form onSubmit={submit} role="search" className="flex w-full items-center gap-2 bg-muted rounded-full px-4 py-2.5 border border-border/60 focus-within:border-primary transition">
             <Search className="h-4 w-4 text-muted-foreground" />
             <label htmlFor="desktop-site-search" className="sr-only">Search products</label>
@@ -69,7 +82,7 @@ export function Header({ categories, marquee, storeName, logo }: { categories: C
           </form>
         </div>
 
-        <div className="flex items-center gap-1 sm:gap-2 justify-self-end">
+        <div className="flex items-center gap-1 sm:gap-2 justify-self-end shrink-0">
           <Link href="/search" className="md:hidden h-10 w-10 grid place-items-center rounded-full hover:bg-blush" aria-label="Search">
             <Search className="h-5 w-5" />
           </Link>
@@ -94,20 +107,6 @@ export function Header({ categories, marquee, storeName, logo }: { categories: C
           </Link>
         </div>
       </div>
-
-      <nav aria-label="Primary navigation" className="hidden md:flex mx-auto max-w-7xl px-6 pb-3 gap-6 text-sm font-semibold">
-        <Link href="/" className={`hover:text-primary transition ${pathname === "/" ? "text-primary" : ""}`}>Home</Link>
-        <Link href="/collections/all" className={`hover:text-primary transition ${pathname.startsWith("/collections/all") ? "text-primary" : ""}`}>Shop All</Link>
-        {categories.map((category) => {
-          const href = `/category/${category.slug}`;
-          return (
-            <Link key={category.slug} href={href} className={`hover:text-primary transition ${pathname.startsWith(href) ? "text-primary" : ""}`}>
-              {category.name}
-            </Link>
-          );
-        })}
-        <Link href="/offers" className={`ml-auto text-sale ${pathname.startsWith("/offers") ? "underline" : ""}`}>Sale ♡</Link>
-      </nav>
     </header>
   );
 }
