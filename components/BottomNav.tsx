@@ -14,10 +14,17 @@ const navItems = [
   { href: "/account", label: "Account", icon: UserRound },
 ];
 
+// /cart and /checkout render their own sticky bottom action bar (price + primary
+// CTA); showing this nav underneath would stack two fixed bottom-0 bars. Exact
+// match only -- /checkout/success has no such bar and still needs this nav.
+const HIDDEN_ON = new Set(["/cart", "/checkout"]);
+
 export function BottomNav() {
   const pathname = usePathname();
   const { cart } = useShop();
   const cartCount = cart.summary.itemCount;
+
+  if (HIDDEN_ON.has(pathname)) return null;
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border/60 bg-background/95 backdrop-blur-md md:hidden" aria-label="Mobile navigation">

@@ -13,11 +13,14 @@ const GUEST_WISHLIST_KEY = "cd_guest_wishlist";
 // doesn't re-run the (otherwise no-op) claim on every load.
 const GUEST_CLAIM_KEY = "cd_guest_claimed";
 
+// Placeholder shown only while the real cart is in flight (cartLoading is true) --
+// consumers gate on cartLoading before trusting these numbers, so the free-shipping
+// fields are zeroed here rather than duplicating the server's threshold client-side.
 const emptyCart: CartDTO = {
   id: null,
   owner: "guest",
   items: [],
-  summary: { currency: "INR", itemCount: 0, subtotalBeforeDiscountCents: 0, discountCents: 0, subtotalCents: 0, shippingCents: null, totalCents: 0 },
+  summary: { currency: "INR", itemCount: 0, subtotalBeforeDiscountCents: 0, discountCents: 0, subtotalCents: 0, shippingCents: 0, freeShippingThresholdCents: 0, freeShippingRemainingCents: 0, totalCents: 0 },
   updatedAt: null,
 };
 

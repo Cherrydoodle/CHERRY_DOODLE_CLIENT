@@ -21,6 +21,12 @@ test("add to cart opens the drawer, syncs to /cart, and gates checkout behind lo
   await expect(page.getByRole("heading", { name: "Your bag" })).toBeVisible();
   await expect(page.getByText(productName, { exact: false }).first()).toBeVisible();
 
+  // The delivery charge must be a real, quoted number (or "Free") before the
+  // shopper commits to checkout -- never the old placeholder copy that only
+  // resolved once a Razorpay session had already been created.
+  await expect(page.getByText("Calculated at checkout")).toHaveCount(0);
+  await expect(page.getByText("Delivery charges")).toBeVisible();
+
   // Checkout requires an authenticated account (RZ-045 / RZ-000 decision #26) —
   // an unauthenticated shopper must be redirected to login, not straight through.
   await page.getByRole("link", { name: "Secure Checkout" }).click();

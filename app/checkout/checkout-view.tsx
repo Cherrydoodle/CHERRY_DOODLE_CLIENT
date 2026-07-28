@@ -4,7 +4,7 @@ import Script from "next/script";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Clock, CreditCard, LockKeyhole, ShoppingBag } from "lucide-react";
+import { AlertTriangle, ChevronLeft, Clock, CreditCard, LockKeyhole, ShoppingBag } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import type { AddressDTO } from "@/features/addresses/service";
@@ -12,6 +12,11 @@ import { track } from "@/lib/analytics/posthog";
 import { formatMoney, variantOptionLabel } from "@/lib/format";
 import { shimmerPlaceholder } from "@/lib/image/shimmer";
 import { useShop } from "@/lib/store";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+
+import { CheckoutStepper, type CheckoutStep } from "./checkout-stepper";
+import { DeliverToCard, type DeliverToAddress } from "./deliver-to-card";
+import { FreeShippingNudge, PriceDetails, type PriceDetailsData } from "./price-details";
 
 type RazorpaySuccess = {
   razorpay_order_id: string;
@@ -140,11 +145,16 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
   const router = useRouter();
   const { cart, cartLoading, clearCart, refreshCart } = useShop();
   const startKey = useRef<string | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const step1Ref = useRef<HTMLDivElement>(null);
   const [session, setSession] = useState<StartCheckout | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [scriptReady, setScriptReady] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState<CheckoutStep>(1);
+  const [draftAddress, setDraftAddress] = useState<DeliverToAddress | null>(null);
+  const [priceSheetOpen, setPriceSheetOpen] = useState(false);
   const defaultAddressId = savedAddresses.find((address) => address.isDefault)?.id ?? savedAddresses[0]?.id ?? "new";
   const [selectedAddressId, setSelectedAddressId] = useState<string>(defaultAddressId);
   const [billingSameAsShipping, setBillingSameAsShipping] = useState(true);
@@ -361,6 +371,43 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
     }
   };
 
+  // Steps stay mounted (CSS-hidden, never unmounted) so the address fields keep
+  // their values when the shopper moves forward/back — a real unmount would drop
+  // the uncontrolled inputs submit() later reads via `new FormData(event.currentTarget)`.
+  const goToStep2 = () => {
+    const container = step1Ref.current;
+    if (container) {
+      const controls = container.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input, textarea, select");
+      for (const control of controls) {
+        if (!control.reportValidity()) {
+          control.focus();
+          return;
+        }
+      }
+    }
+    if (formRef.current) {
+      const form = new FormData(formRef.current);
+      const label = isAuthenticated && selectedAddressId !== "new" ? selectedAddress?.label ?? null : null;
+      setDraftAddress({
+        label,
+        recipientName: String(form.get("name") || ""),
+        phone: String(form.get("phone") || ""),
+        line1: String(form.get("line1") || ""),
+        line2: String(form.get("line2") || "") || undefined,
+        city: String(form.get("city") || ""),
+        state: String(form.get("state") || ""),
+        postalCode: String(form.get("postalCode") || ""),
+      });
+    }
+    setStep(2);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const goToStep = (target: CheckoutStep) => {
+    setStep(target);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   if (!cartLoading && !items.length) {
     return (
       <section className="mx-auto max-w-2xl px-6 py-24 text-center">
@@ -374,6 +421,15 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
 
   const summary = session?.summary;
   const currency = summary?.currency ?? cart.summary.currency;
+  const priceData: PriceDetailsData = {
+    currency,
+    itemCount: items.reduce((sum, item) => sum + item.quantity, 0),
+    listTotalCents: summary?.subtotalMinor ?? cart.summary.subtotalBeforeDiscountCents,
+    discountCents: summary?.discountMinor ?? cart.summary.discountCents,
+    shippingCents: summary?.shippingMinor ?? cart.summary.shippingCents,
+    taxCents: summary?.taxMinor ?? 0,
+    totalCents: summary?.totalMinor ?? cart.summary.totalCents,
+  };
 
   return (
     <>
@@ -384,176 +440,262 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
         onLoad={() => setScriptReady(true)}
         onError={() => setError("Secure payment checkout could not be loaded.")}
       />
-      <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-        <div className="mb-8">
+      <div className="mx-auto max-w-6xl px-4 py-10 pb-28 sm:px-6 md:pb-10">
+        <div className="mb-6">
           <p className="text-sm font-bold text-primary">Secure checkout</p>
           <h1 className="font-display text-3xl font-black sm:text-4xl">Delivery and payment</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Your final price and stock are verified securely before Razorpay opens.</p>
         </div>
 
-        <form onSubmit={submit} onChange={() => { if (!session) startKey.current = null; }} className="grid gap-8 lg:grid-cols-[1fr_380px]">
+        <CheckoutStepper current={step} onStepClick={goToStep} />
+
+        <form
+          ref={formRef}
+          id="checkout-form"
+          onSubmit={submit}
+          onChange={() => { if (!session) startKey.current = null; }}
+          onKeyDown={(event) => {
+            // Textareas don't implicitly submit on Enter (it just inserts a newline),
+            // so only text inputs need guarding against jumping straight to payment.
+            if (event.key === "Enter" && step !== 3 && (event.target as HTMLElement).tagName !== "TEXTAREA") event.preventDefault();
+          }}
+          className="grid gap-8 lg:grid-cols-[1fr_380px]"
+        >
           <div className="space-y-6">
-            <section className="card-soft p-5 sm:p-7">
-              <h2 className="font-display text-xl font-bold">Contact details</h2>
-              <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                <Field label="Full name" name="name" autoComplete="name" minLength={2} maxLength={120} />
-                <Field label="Email" name="email" type="email" autoComplete="email" maxLength={320} />
-                <Field label="Phone" name="phone" type="tel" autoComplete="tel" minLength={7} maxLength={20} className="sm:col-span-2" placeholder="+91 98765 43210" />
-              </div>
-            </section>
+            {/* Step 1 · Address — always mounted, CSS-hidden so field values survive step changes */}
+            <div ref={step1Ref} className={step === 1 ? "space-y-6" : "hidden"}>
+              <section className="card-soft p-5 sm:p-7">
+                <h2 className="font-display text-xl font-bold">Contact details</h2>
+                <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                  <Field label="Full name" name="name" autoComplete="name" minLength={2} maxLength={120} />
+                  <Field label="Email" name="email" type="email" autoComplete="email" maxLength={320} />
+                  <Field label="Phone" name="phone" type="tel" autoComplete="tel" minLength={7} maxLength={20} className="sm:col-span-2" placeholder="+91 98765 43210" />
+                </div>
+              </section>
 
-            <section className="card-soft p-5 sm:p-7">
-              <h2 className="font-display text-xl font-bold">Shipping address</h2>
+              <section className="card-soft p-5 sm:p-7">
+                <h2 className="font-display text-xl font-bold">Shipping address</h2>
 
-              {savedAddresses.length > 0 && (
-                <div className="mt-4 space-y-2">
-                  {savedAddresses.map((address) => (
-                    <label
-                      key={address.id}
-                      className={`flex items-start gap-2.5 rounded-2xl border p-3 text-sm ${selectedAddressId === address.id ? "border-primary bg-blush/40" : "border-border"}`}
-                    >
-                      <input
-                        type="radio"
-                        name="savedAddressChoice"
-                        checked={selectedAddressId === address.id}
-                        onChange={() => setSelectedAddressId(address.id)}
-                        className="mt-1 accent-primary"
-                      />
-                      <span>
-                        <strong>{address.label}</strong> — {address.recipientName}
-                        <br />
-                        <span className="text-muted-foreground">
-                          {[address.line1, address.line2, address.city, address.state, address.postalCode].filter(Boolean).join(", ")}
+                {savedAddresses.length > 0 && (
+                  <div className="mt-4 space-y-2">
+                    {savedAddresses.map((address) => (
+                      <label
+                        key={address.id}
+                        className={`flex items-start gap-2.5 rounded-2xl border p-3 text-sm ${selectedAddressId === address.id ? "border-primary bg-blush/40" : "border-border"}`}
+                      >
+                        <input
+                          type="radio"
+                          name="savedAddressChoice"
+                          checked={selectedAddressId === address.id}
+                          onChange={() => setSelectedAddressId(address.id)}
+                          className="mt-1 accent-primary"
+                        />
+                        <span>
+                          <strong>{address.label}</strong> — {address.recipientName}
+                          <br />
+                          <span className="text-muted-foreground">
+                            {[address.line1, address.line2, address.city, address.state, address.postalCode].filter(Boolean).join(", ")}
+                          </span>
                         </span>
-                      </span>
+                      </label>
+                    ))}
+                    <label className={`flex items-center gap-2.5 rounded-2xl border p-3 text-sm ${selectedAddressId === "new" ? "border-primary bg-blush/40" : "border-border"}`}>
+                      <input type="radio" name="savedAddressChoice" checked={selectedAddressId === "new"} onChange={() => setSelectedAddressId("new")} className="accent-primary" />
+                      Use a new address
                     </label>
-                  ))}
-                  <label className={`flex items-center gap-2.5 rounded-2xl border p-3 text-sm ${selectedAddressId === "new" ? "border-primary bg-blush/40" : "border-border"}`}>
-                    <input type="radio" name="savedAddressChoice" checked={selectedAddressId === "new"} onChange={() => setSelectedAddressId("new")} className="accent-primary" />
-                    Use a new address
-                  </label>
-                </div>
-              )}
-
-              <div key={selectedAddressId} className="mt-5 grid gap-4 sm:grid-cols-2">
-                <Field label="Address line 1" name="line1" autoComplete="address-line1" minLength={3} maxLength={200} className="sm:col-span-2" defaultValue={selectedAddress?.line1} />
-                <Field label="Address line 2 (optional)" name="line2" autoComplete="address-line2" maxLength={200} required={false} className="sm:col-span-2" defaultValue={selectedAddress?.line2 ?? undefined} />
-                <Field label="City" name="city" autoComplete="address-level2" minLength={2} maxLength={100} defaultValue={selectedAddress?.city} />
-                <Field label="State" name="state" autoComplete="address-level1" minLength={2} maxLength={100} defaultValue={selectedAddress?.state} />
-                <Field label="Postal code" name="postalCode" autoComplete="postal-code" minLength={3} maxLength={20} defaultValue={selectedAddress?.postalCode} />
-                <Field label="Country code" name="country" autoComplete="country" minLength={2} maxLength={2} defaultValue={selectedAddress?.countryCode ?? "IN"} />
-                {isAuthenticated && selectedAddressId === "new" && (
-                  <label className="sm:col-span-2 flex items-center gap-2 text-sm">
-                    <input type="checkbox" name="saveAddress" defaultChecked className="h-4 w-4 accent-primary" />
-                    Save this address for next time
-                  </label>
+                  </div>
                 )}
-                <label className="sm:col-span-2 text-sm font-bold">
-                  Order note (optional)
-                  <textarea name="note" maxLength={2000} rows={3} className="mt-1.5 w-full resize-none rounded-2xl border bg-white px-4 py-3 font-normal outline-none focus:border-primary" />
-                </label>
-              </div>
-            </section>
 
-            <section className="card-soft p-5 sm:p-7">
-              <h2 className="font-display text-xl font-bold">Billing address</h2>
-              <label className="mt-3 flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={billingSameAsShipping}
-                  onChange={(event) => setBillingSameAsShipping(event.target.checked)}
-                  className="h-4 w-4 accent-primary"
-                />
-                Same as shipping address
-              </label>
-              {!billingSameAsShipping && (
-                <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                  <Field label="Address line 1" name="billingLine1" autoComplete="billing address-line1" minLength={3} maxLength={200} className="sm:col-span-2" />
-                  <Field label="Address line 2 (optional)" name="billingLine2" autoComplete="billing address-line2" maxLength={200} required={false} className="sm:col-span-2" />
-                  <Field label="City" name="billingCity" autoComplete="billing address-level2" minLength={2} maxLength={100} />
-                  <Field label="State" name="billingState" autoComplete="billing address-level1" minLength={2} maxLength={100} />
-                  <Field label="Postal code" name="billingPostalCode" autoComplete="billing postal-code" minLength={3} maxLength={20} />
-                  <Field label="Country code" name="billingCountry" autoComplete="billing country" minLength={2} maxLength={2} defaultValue="IN" />
+                <div key={selectedAddressId} className="mt-5 grid gap-4 sm:grid-cols-2">
+                  <Field label="Address line 1" name="line1" autoComplete="address-line1" minLength={3} maxLength={200} className="sm:col-span-2" defaultValue={selectedAddress?.line1} />
+                  <Field label="Address line 2 (optional)" name="line2" autoComplete="address-line2" maxLength={200} required={false} className="sm:col-span-2" defaultValue={selectedAddress?.line2 ?? undefined} />
+                  <Field label="City" name="city" autoComplete="address-level2" minLength={2} maxLength={100} defaultValue={selectedAddress?.city} />
+                  <Field label="State" name="state" autoComplete="address-level1" minLength={2} maxLength={100} defaultValue={selectedAddress?.state} />
+                  <Field label="Postal code" name="postalCode" autoComplete="postal-code" minLength={3} maxLength={20} defaultValue={selectedAddress?.postalCode} />
+                  <Field label="Country code" name="country" autoComplete="country" minLength={2} maxLength={2} defaultValue={selectedAddress?.countryCode ?? "IN"} />
+                  {isAuthenticated && selectedAddressId === "new" && (
+                    <label className="sm:col-span-2 flex items-center gap-2 text-sm">
+                      <input type="checkbox" name="saveAddress" defaultChecked className="h-4 w-4 accent-primary" />
+                      Save this address for next time
+                    </label>
+                  )}
+                  <label className="sm:col-span-2 text-sm font-bold">
+                    Order note (optional)
+                    <textarea name="note" maxLength={2000} rows={3} className="mt-1.5 w-full resize-none rounded-2xl border bg-white px-4 py-3 font-normal outline-none focus:border-primary" />
+                  </label>
                 </div>
-              )}
-            </section>
+              </section>
+
+              <section className="card-soft p-5 sm:p-7">
+                <h2 className="font-display text-xl font-bold">Billing address</h2>
+                <label className="mt-3 flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={billingSameAsShipping}
+                    onChange={(event) => setBillingSameAsShipping(event.target.checked)}
+                    className="h-4 w-4 accent-primary"
+                  />
+                  Same as shipping address
+                </label>
+                {!billingSameAsShipping && (
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <Field label="Address line 1" name="billingLine1" autoComplete="billing address-line1" minLength={3} maxLength={200} className="sm:col-span-2" />
+                    <Field label="Address line 2 (optional)" name="billingLine2" autoComplete="billing address-line2" maxLength={200} required={false} className="sm:col-span-2" />
+                    <Field label="City" name="billingCity" autoComplete="billing address-level2" minLength={2} maxLength={100} />
+                    <Field label="State" name="billingState" autoComplete="billing address-level1" minLength={2} maxLength={100} />
+                    <Field label="Postal code" name="billingPostalCode" autoComplete="billing postal-code" minLength={3} maxLength={20} />
+                    <Field label="Country code" name="billingCountry" autoComplete="billing country" minLength={2} maxLength={2} defaultValue="IN" />
+                  </div>
+                )}
+              </section>
+            </div>
+
+            {/* Step 2 · Order Summary */}
+            {step === 2 && draftAddress && (
+              <div className="space-y-6">
+                <DeliverToCard address={draftAddress} onChange={() => goToStep(1)} />
+                {!summary && cart.summary.freeShippingRemainingCents > 0 && (
+                  <FreeShippingNudge
+                    currency={cart.summary.currency}
+                    thresholdCents={cart.summary.freeShippingThresholdCents}
+                    remainingCents={cart.summary.freeShippingRemainingCents}
+                    className="lg:hidden"
+                  />
+                )}
+                <section className="card-soft p-5 sm:p-7">
+                  <h2 className="font-display text-xl font-bold">Order summary</h2>
+                  <ul className="mt-4 space-y-4">
+                    {items.map((item) => (
+                      <li key={item.id} className="flex gap-3 border-b border-border/60 pb-4 last:border-0 last:pb-0">
+                        <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-blush">
+                          <Image src={item.product.primaryImage.urls.thumb} alt="" fill sizes="64px" placeholder="blur" blurDataURL={shimmerPlaceholder(160, 160)} className="object-cover" />
+                        </div>
+                        <div className="min-w-0 flex-1 text-sm">
+                          <p className="line-clamp-1 font-bold">{item.product.name}</p>
+                          <p className="text-xs text-muted-foreground">{variantOptionLabel(item.variant)} · Qty {item.quantity}</p>
+                        </div>
+                        <p className="text-sm font-bold">{formatMoney(item.lineTotalCents, currency)}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                <PriceDetails data={priceData} className="card-soft p-5 sm:p-7 lg:hidden" />
+              </div>
+            )}
+
+            {/* Step 3 · Payment */}
+            {step === 3 && draftAddress && (
+              <div className="space-y-6">
+                <button type="button" onClick={() => goToStep(2)} className="inline-flex items-center gap-1 text-sm font-bold text-muted-foreground hover:text-primary">
+                  <ChevronLeft className="h-4 w-4" /> Back to order summary
+                </button>
+                <DeliverToCard address={draftAddress} onChange={() => goToStep(1)} />
+
+                <section className="card-soft p-5 sm:p-7">
+                  <h2 className="font-display text-xl font-bold">Payment</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">Your final price and stock are verified securely before Razorpay opens.</p>
+
+                  {session && msRemaining !== null && (
+                    <div className={`mt-4 flex items-center gap-2 rounded-2xl p-3 text-xs font-semibold ${expired ? "bg-red-50 text-red-700" : "bg-blush text-foreground/80"}`}>
+                      <Clock className="h-3.5 w-3.5 shrink-0" />
+                      {expired
+                        ? "Your reserved items have been released. Start checkout again to reserve them."
+                        : `Items reserved for ${formatCountdown(msRemaining)} — complete payment before then.`}
+                    </div>
+                  )}
+
+                  {error && (
+                    <div role="alert" className="mt-4 flex gap-2 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" /> <span>{error}</span>
+                    </div>
+                  )}
+
+                  <label className="mt-4 flex items-start gap-2.5 text-xs text-muted-foreground">
+                    <input type="checkbox" name="termsAccepted" required className="mt-0.5 h-4 w-4 shrink-0 accent-primary" />
+                    <span>
+                      I agree to the{" "}
+                      <Link href="/terms" target="_blank" className="text-primary hover:underline">Terms &amp; Conditions</Link>,{" "}
+                      <Link href="/privacy" target="_blank" className="text-primary hover:underline">Privacy Policy</Link>,{" "}
+                      <Link href="/shipping" target="_blank" className="text-primary hover:underline">Shipping Policy</Link>, and{" "}
+                      <Link href="/refund" target="_blank" className="text-primary hover:underline">Cancellation &amp; Refund Policy</Link>.
+                    </span>
+                  </label>
+
+                  <div className="mt-3 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+                    <LockKeyhole className="h-3.5 w-3.5" /> Payment handled by Razorpay
+                  </div>
+                </section>
+              </div>
+            )}
           </div>
 
-          <aside className="card-soft h-fit p-6 lg:sticky lg:top-28">
-            <h2 className="font-display text-xl font-bold">Order summary</h2>
-            <ul className="mt-4 max-h-72 space-y-3 overflow-auto pr-1">
-              {items.map((item) => (
-                <li key={item.id} className="flex gap-3">
-                  <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-blush">
-                    <Image src={item.product.primaryImage.urls.thumb} alt="" fill sizes="64px" placeholder="blur" blurDataURL={shimmerPlaceholder(160, 160)} className="object-cover" />
-                  </div>
-                  <div className="min-w-0 flex-1 text-sm">
-                    <p className="line-clamp-1 font-bold">{item.product.name}</p>
-                    <p className="text-xs text-muted-foreground">{variantOptionLabel(item.variant)} · Qty {item.quantity}</p>
-                  </div>
-                  <p className="text-sm font-bold">{formatMoney(item.lineTotalCents, currency)}</p>
-                </li>
-              ))}
-            </ul>
-            <div className="mt-5 space-y-2 border-t pt-4 text-sm">
-              <div className="flex justify-between"><span>Subtotal</span><span>{formatMoney(summary?.subtotalMinor ?? cart.summary.subtotalBeforeDiscountCents, currency)}</span></div>
-              {(summary ? summary.discountMinor > 0 : cart.summary.discountCents > 0) && (
-                <div className="flex justify-between text-sale font-semibold"><span>Discount</span><span>-{formatMoney(summary?.discountMinor ?? cart.summary.discountCents, currency)}</span></div>
-              )}
-              <div className="flex justify-between text-muted-foreground">
-                <span>Shipping</span>
-                <span>{summary ? (summary.shippingMinor === 0 ? "Free" : formatMoney(summary.shippingMinor, currency)) : "Calculated securely"}</span>
-              </div>
-              {summary && summary.taxMinor > 0 && (
-                <div className="flex justify-between text-muted-foreground"><span>Tax</span><span>{formatMoney(summary.taxMinor, currency)}</span></div>
-              )}
-              <div className="flex justify-between border-t border-border pt-3 mt-3 font-display text-lg font-black">
-                <span>Total</span><span>{formatMoney(summary?.totalMinor ?? cart.summary.subtotalCents, currency)}</span>
-              </div>
-              {!summary && <p className="text-xs text-muted-foreground">The server recalculates prices, discounts, shipping, and stock before payment.</p>}
-            </div>
-
-            {session && msRemaining !== null && (
-              <div className={`mt-4 flex items-center gap-2 rounded-2xl p-3 text-xs font-semibold ${expired ? "bg-red-50 text-red-700" : "bg-blush text-foreground/80"}`}>
-                <Clock className="h-3.5 w-3.5 shrink-0" />
-                {expired
-                  ? "Your reserved items have been released. Start checkout again to reserve them."
-                  : `Items reserved for ${formatCountdown(msRemaining)} — complete payment before then.`}
-              </div>
+          <aside className="hidden h-fit lg:sticky lg:top-28 lg:block">
+            {cart.summary.freeShippingRemainingCents > 0 && !summary && (
+              <FreeShippingNudge
+                currency={cart.summary.currency}
+                thresholdCents={cart.summary.freeShippingThresholdCents}
+                remainingCents={cart.summary.freeShippingRemainingCents}
+                className="mb-4"
+              />
             )}
+            <div className="card-soft p-6">
+              <PriceDetails data={priceData} />
 
-            {error && (
-              <div role="alert" className="mt-4 flex gap-2 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" /> <span>{error}</span>
-              </div>
-            )}
-
-            <label className="mt-4 flex items-start gap-2.5 text-xs text-muted-foreground">
-              <input type="checkbox" name="termsAccepted" required className="mt-0.5 h-4 w-4 shrink-0 accent-primary" />
-              <span>
-                I agree to the{" "}
-                <Link href="/terms" target="_blank" className="text-primary hover:underline">Terms &amp; Conditions</Link>,{" "}
-                <Link href="/privacy" target="_blank" className="text-primary hover:underline">Privacy Policy</Link>,{" "}
-                <Link href="/shipping" target="_blank" className="text-primary hover:underline">Shipping Policy</Link>, and{" "}
-                <Link href="/refund" target="_blank" className="text-primary hover:underline">Cancellation &amp; Refund Policy</Link>.
-              </span>
-            </label>
-
-            <button
-              type="submit"
-              disabled={processing || !scriptReady || expired}
-              className="btn-primary mt-3 w-full disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <CreditCard className="h-4 w-4" />
-              {processing ? "Opening secure payment…" : !scriptReady ? "Loading payment…" : expired ? "Reservation expired" : "Pay securely"}
-            </button>
-            <div className="mt-3 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
-              <LockKeyhole className="h-3.5 w-3.5" /> Payment handled by Razorpay
+              <button
+                type={step === 3 ? "submit" : "button"}
+                onClick={step === 1 ? goToStep2 : step === 2 ? () => goToStep(3) : undefined}
+                disabled={step === 3 && (processing || !scriptReady || expired)}
+                className="btn-primary mt-5 w-full disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {step === 1 && "Deliver here"}
+                {step === 2 && "Continue"}
+                {step === 3 && (
+                  <>
+                    <CreditCard className="h-4 w-4" />
+                    {processing ? "Opening secure payment…" : !scriptReady ? "Loading payment…" : expired ? "Reservation expired" : "Pay securely"}
+                  </>
+                )}
+              </button>
+              <Link href="/cart" className="btn-ghost-pink mt-3 block w-full text-center">Back to bag</Link>
             </div>
-            <Link href="/cart" className="btn-ghost-pink mt-3 block w-full text-center">Back to bag</Link>
           </aside>
         </form>
       </div>
+
+      {/* Mobile sticky action bar — sits above content but never above BottomNav, which
+          hides itself on /checkout so the two bars can't stack. */}
+      <div className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-background/95 px-4 py-3 backdrop-blur-md md:hidden pb-[env(safe-area-inset-bottom)]">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            {cart.summary.subtotalBeforeDiscountCents > priceData.totalCents && (
+              <p className="text-xs text-muted-foreground line-through">{formatMoney(cart.summary.subtotalBeforeDiscountCents, currency)}</p>
+            )}
+            <p className="font-display text-lg font-black">{formatMoney(priceData.totalCents, currency)}</p>
+            <button type="button" onClick={() => setPriceSheetOpen(true)} className="text-xs font-bold text-primary underline underline-offset-2">
+              View price details
+            </button>
+          </div>
+          <button
+            type={step === 3 ? "submit" : "button"}
+            form="checkout-form"
+            onClick={step === 1 ? goToStep2 : step === 2 ? () => goToStep(3) : undefined}
+            disabled={step === 3 && (processing || !scriptReady || expired)}
+            className="btn-primary shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {step === 1 && "Deliver here"}
+            {step === 2 && "Continue"}
+            {step === 3 && (processing ? "Processing…" : !scriptReady ? "Loading…" : expired ? "Expired" : "Pay securely")}
+          </button>
+        </div>
+      </div>
+
+      <Sheet open={priceSheetOpen} onOpenChange={setPriceSheetOpen}>
+        <SheetContent side="bottom" className="max-h-[80vh] overflow-y-auto rounded-t-3xl">
+          <SheetHeader className="text-left">
+            <SheetTitle className="font-display">Price Details</SheetTitle>
+          </SheetHeader>
+          <PriceDetails data={priceData} className="px-1 pb-4" />
+        </SheetContent>
+      </Sheet>
     </>
   );
 }

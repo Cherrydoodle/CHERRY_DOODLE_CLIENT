@@ -94,9 +94,14 @@ export function CartDrawer() {
             </ul>
 
             <SheetFooter className="border-t border-border px-6 py-5 flex-col gap-3 sm:flex-col">
-              <div className="flex justify-between font-display text-lg font-black w-full">
-                <span>Subtotal</span>
-                <span>{formatMoney(summary.subtotalCents, summary.currency)}</span>
+              <div className="w-full">
+                <div className="flex justify-between font-display text-lg font-black">
+                  <span>Subtotal</span>
+                  <span>{formatMoney(summary.subtotalCents, summary.currency)}</span>
+                </div>
+                <p className={`mt-1 text-xs ${summary.shippingCents === 0 ? "text-emerald-700 font-semibold" : "text-muted-foreground"}`}>
+                  {summary.shippingCents === 0 ? "Free delivery" : `+ ${formatMoney(summary.shippingCents, summary.currency)} delivery`}
+                </p>
               </div>
               <Link href="/checkout" onClick={(event) => navigate(event, "/checkout")} className="btn-primary w-full">
                 <ShoppingBag className="h-4 w-4" /> Secure Checkout
