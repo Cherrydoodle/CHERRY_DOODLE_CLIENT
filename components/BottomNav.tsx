@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, UserRound, Heart, ShoppingBag, LayoutGrid, Tag } from "lucide-react";
+import { Home, UserRound, ShoppingBag, LayoutGrid, Tag } from "lucide-react";
 
 import { useShop } from "@/lib/store";
 
@@ -10,14 +10,13 @@ const navItems = [
   { href: "/", label: "Home", icon: Home, exact: true },
   { href: "/collections/all", label: "Shop", icon: LayoutGrid },
   { href: "/offers", label: "Offers", icon: Tag },
-  { href: "/wishlist", label: "Saved", icon: Heart, badge: "wish" as const },
   { href: "/cart", label: "Bag", icon: ShoppingBag, badge: "cart" as const },
   { href: "/account", label: "Account", icon: UserRound },
 ];
 
 export function BottomNav() {
   const pathname = usePathname();
-  const { cart, wishlist } = useShop();
+  const { cart } = useShop();
   const cartCount = cart.summary.itemCount;
 
   return (
@@ -25,7 +24,7 @@ export function BottomNav() {
       <div className="flex items-center justify-around px-2 py-2 pb-[env(safe-area-inset-bottom)]">
         {navItems.map(({ href, label, icon: Icon, exact, badge }) => {
           const isActive = exact ? pathname === href : pathname.startsWith(href) && href !== "/";
-          const count = badge === "cart" ? cartCount : badge === "wish" ? wishlist.length : 0;
+          const count = badge === "cart" ? cartCount : 0;
 
           return (
             <Link

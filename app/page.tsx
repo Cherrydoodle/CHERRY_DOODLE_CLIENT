@@ -37,14 +37,14 @@ export default async function Home() {
             <p className="text-muted-foreground mt-1">Find your next cute little thing.</p>
           </div>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 sm:gap-6">
           {home.categories.map((category) => (
             <Link
               key={category.slug}
               href={`/category/${category.slug}`}
-              className="group relative overflow-hidden rounded-3xl shadow-sm border border-border/40 transition-all hover:-translate-y-1 hover:shadow-lg"
+              className="group block text-center transition-all hover:-translate-y-1"
             >
-              <div className="aspect-square w-full overflow-hidden relative">
+              <div className="aspect-square w-full overflow-hidden rounded-3xl border border-border/40 shadow-sm relative">
                 {category.image && (
                   <Image
                     src={category.image.urls.card}
@@ -53,15 +53,12 @@ export default async function Home() {
                     sizes="(min-width: 1024px) 20vw, 33vw"
                     placeholder="blur"
                     blurDataURL={shimmerPlaceholder(800, 800)}
-                    className="object-cover transition-transform duration-500 group-hover:scale-110"
+                    className="object-cover transition-transform duration-500 group-hover:scale-105"
                   />
                 )}
               </div>
-              <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent" />
-              <div className="absolute bottom-0 left-0 right-0 p-3 text-center text-white">
-                <div className="text-xl">{category.emoji}</div>
-                <div className="mt-0.5 font-display text-xs font-bold leading-tight">{category.name}</div>
-                <div className="mt-0.5 text-[10px] opacity-75">{category.subcategories.length} categories</div>
+              <div className="mt-3 font-display text-sm sm:text-base font-bold text-foreground group-hover:text-primary transition-colors">
+                {category.name}
               </div>
             </Link>
           ))}
