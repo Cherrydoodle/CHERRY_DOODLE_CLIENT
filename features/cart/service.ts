@@ -8,7 +8,7 @@ import { mediaImageDto } from "@/features/media/delivery";
 import type { CartDTO } from "@/features/cart/types";
 import { resolveOfferPrices, type ResolvedOfferPrice } from "@/features/offers/pricing";
 import { optionalAuth, requireUser } from "@/lib/auth/authorization";
-import { requireApplicationSecrets } from "@/lib/env.server";
+import { requireApplicationSecrets, requireCheckoutPricingConfig } from "@/lib/env.server";
 import { ApiError } from "@/lib/http/problem";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 
@@ -67,9 +67,14 @@ async function resolveCart(create: boolean): Promise<{ cart: CartRecord | null; 
 }
 
 function emptyCart(owner: "guest" | "user"): CartDTO {
+  const { freeShippingThresholdMinor } = requireCheckoutPricingConfig();
   return {
     id: null, owner, items: [],
-    summary: { currency: "INR", itemCount: 0, subtotalBeforeDiscountCents: 0, discountCents: 0, subtotalCents: 0, shippingCents: null, totalCents: 0 },
+    summary: {
+      currency: "INR", itemCount: 0, subtotalBeforeDiscountCents: 0, discountCents: 0, subtotalCents: 0,
+      shippingCents: 0, freeShippingThresholdCents: freeShippingThresholdMinor, freeShippingRemainingCents: freeShippingThresholdMinor,
+      totalCents: 0,
+    },
     updatedAt: null,
   };
 }
@@ -149,9 +154,21 @@ export async function getCartById(cart: CartRecord, owner: "guest" | "user"): Pr
   }
   const before = dtoItems.reduce((sum, item) => sum + item.originalLineTotalCents, 0);
   const subtotal = dtoItems.reduce((sum, item) => sum + item.lineTotalCents, 0);
+  // Mirrors features/checkout/service.ts#resolveCheckoutLines exactly (same
+  // requireCheckoutPricingConfig threshold, compared against the same post-discount
+  // merchandise total) so the cart never quotes a different delivery charge than
+  // the checkout session that follows it.
+  const { freeShippingThresholdMinor, flatShippingMinor } = requireCheckoutPricingConfig();
+  const shippingCents = dtoItems.length === 0 || subtotal >= freeShippingThresholdMinor ? 0 : flatShippingMinor;
   return {
     id: cart.id, owner, items: dtoItems,
-    summary: { currency: cartCurrency(dtoItems), itemCount: dtoItems.reduce((sum, item) => sum + item.quantity, 0), subtotalBeforeDiscountCents: before, discountCents: before - subtotal, subtotalCents: subtotal, shippingCents: null, totalCents: subtotal },
+    summary: {
+      currency: cartCurrency(dtoItems), itemCount: dtoItems.reduce((sum, item) => sum + item.quantity, 0),
+      subtotalBeforeDiscountCents: before, discountCents: before - subtotal, subtotalCents: subtotal,
+      shippingCents, freeShippingThresholdCents: freeShippingThresholdMinor,
+      freeShippingRemainingCents: Math.max(0, freeShippingThresholdMinor - subtotal),
+      totalCents: subtotal + shippingCents,
+    },
     updatedAt: cart.updated_at,
   };
 }

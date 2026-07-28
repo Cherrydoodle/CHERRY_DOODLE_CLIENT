@@ -19,7 +19,9 @@ export type CartDTO = {
     subtotalBeforeDiscountCents: number;
     discountCents: number;
     subtotalCents: number;
-    shippingCents: null;
+    shippingCents: number;
+    freeShippingThresholdCents: number;
+    freeShippingRemainingCents: number;
     totalCents: number;
   };
   updatedAt: string | null;
