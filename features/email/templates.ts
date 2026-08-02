@@ -15,7 +15,8 @@ export type EmailMessageType =
   | "newsletter_confirmation"
   | "order_confirmation"
   | "payment_requires_review"
-  | "payment_auto_refunded";
+  | "payment_auto_refunded"
+  | "order_shipped";
 
 export type RenderedEmail = { subject: string; html: string; text: string };
 
@@ -173,6 +174,31 @@ function paymentAutoRefunded(payload: Record<string, unknown>, store: StoreIdent
   return { subject: `Refund issued — ${store.storeName}`, html, text };
 }
 
+function orderShipped(payload: Record<string, unknown>, store: StoreIdentity): RenderedEmail {
+  const orderNumber = String(payload.orderNumber ?? "");
+  const customerName = String(payload.customerName ?? "there");
+  const trackingUrl = safeUrl(payload.trackingUrl);
+
+  const html = layout(
+    store,
+    "Your order is on its way",
+    `<p style="margin:0 0 8px;line-height:1.6;">Hi ${escapeHtml(customerName)}, good news — your order is now with our courier partner and on its way to you.</p>
+     <p style="margin:0 0 20px;line-height:1.6;">Order number <strong>${escapeHtml(orderNumber)}</strong></p>
+     ${trackingUrl ? button(trackingUrl, "Track your package") : ""}`,
+  );
+
+  const text = [
+    `Hi ${customerName}, good news — your order is now with our courier partner and on its way to you.`,
+    ``,
+    `Order number: ${orderNumber}`,
+    ...(trackingUrl ? [``, `Track your package: ${trackingUrl}`] : []),
+    ``,
+    `${store.storeName} · ${store.email}`,
+  ].join("\n");
+
+  return { subject: `Order ${orderNumber} is on its way — ${store.storeName}`, html, text };
+}
+
 function newsletterConfirmation(payload: Record<string, unknown>, store: StoreIdentity): RenderedEmail | null {
   const confirmUrl = safeUrl(payload.confirmUrl);
   if (!confirmUrl) return null;
@@ -209,6 +235,8 @@ export function renderEmail(messageType: string, payload: unknown, store: StoreI
       return paymentRequiresReview(data, store);
     case "payment_auto_refunded":
       return paymentAutoRefunded(data, store);
+    case "order_shipped":
+      return orderShipped(data, store);
     case "newsletter_confirmation":
       return newsletterConfirmation(data, store);
     default:

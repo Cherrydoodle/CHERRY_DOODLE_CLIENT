@@ -33,6 +33,14 @@ export type MyOrderStatusEventDTO = {
   createdAt: string;
 };
 
+// Customer-safe subset of a scan: no NSL code and no shipment-level error text --
+// those are internal operational detail (see features/delhivery/service.ts).
+export type MyOrderScanDTO = {
+  status: string;
+  location: string | null;
+  scannedAt: string;
+};
+
 export type MyOrderRefundDTO = {
   id: string;
   amountMinor: number;
@@ -59,6 +67,7 @@ export type MyOrderDetailDTO = MyOrderSummaryDTO & {
   carrier: string | null;
   trackingNumber: string | null;
   trackingUrl: string | null;
+  shipmentScans: MyOrderScanDTO[];
 };
 
 // Columns selected for a single order's full detail. Shared by the account order
@@ -70,7 +79,8 @@ export const ORDER_DETAIL_SELECT = `
   carrier,tracking_number,tracking_url,
   order_items(id,product_name,sku,variant_label,color_name,quantity,unit_price_minor,line_total_minor),
   order_status_history(id,to_status,created_at),
-  refunds(id,amount_minor,currency,status,reason,created_at)
+  refunds(id,amount_minor,currency,status,reason,created_at),
+  shipments(id,shipment_scans(scan_status,scan_location,scanned_at))
 `;
 
 export const ORDER_SUMMARY_SELECT =
@@ -107,6 +117,10 @@ export function mapOrderDetailRow(row: Record<string, unknown>): MyOrderDetailDT
     carrier: row.carrier ? String(row.carrier) : null,
     trackingNumber: row.tracking_number ? String(row.tracking_number) : null,
     trackingUrl: row.tracking_url ? String(row.tracking_url) : null,
+    shipmentScans: ((row.shipments as Array<Record<string, unknown>> | null) ?? [])
+      .flatMap((shipment) => (shipment.shipment_scans as Array<Record<string, unknown>> | null) ?? [])
+      .map((scan) => ({ status: String(scan.scan_status), location: scan.scan_location ? String(scan.scan_location) : null, scannedAt: String(scan.scanned_at) }))
+      .sort((a, b) => a.scannedAt.localeCompare(b.scannedAt)),
     items: items.map((item) => ({
       id: String(item.id),
       name: String(item.product_name),

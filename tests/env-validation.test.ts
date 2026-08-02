@@ -41,6 +41,18 @@ function configureValidEnv() {
     CRON_SECRET: SECRET_C,
     UPSTASH_REDIS_REST_URL: "https://us1-cherry.upstash.io",
     UPSTASH_REDIS_REST_TOKEN: SECRET_D,
+    DELHIVERY_MODE: "test",
+    DELHIVERY_API_TOKEN: "abcd1234efgh",
+    DELHIVERY_CLIENT_NAME: "Cherry Doodle Pvt Ltd",
+    DELHIVERY_PICKUP_LOCATION_NAME: "Cherry Doodle Warehouse",
+    DELHIVERY_PICKUP_ADDRESS: "123 Industrial Area",
+    DELHIVERY_PICKUP_CITY: "New Delhi",
+    DELHIVERY_PICKUP_STATE: "Delhi",
+    DELHIVERY_PICKUP_PIN: "110001",
+    DELHIVERY_PICKUP_PHONE: "9800000000",
+    DELHIVERY_SELLER_GST_TIN: "07AABCU9603R1ZM",
+    DELHIVERY_DEFAULT_HSN_CODE: "6109",
+    DELHIVERY_WEBHOOK_SECRET: SECRET_E,
   } as NodeJS.ProcessEnv;
 }
 
@@ -164,5 +176,29 @@ describe("assertServerEnv", () => {
     process.env.SUPABASE_SECRET_KEY = "sb_secret_your-project-ref-placeholder-value-1234567890";
     expect(() => assertServerEnv({ production: false })).not.toThrow();
     expect(() => assertServerEnv({ production: true })).toThrow(/SUPABASE_SECRET_KEY/);
+  });
+
+  it("requires Delhivery credentials in production", () => {
+    configureValidEnv();
+    delete process.env.DELHIVERY_API_TOKEN;
+    expect(() => assertServerEnv({ production: true })).toThrow(/DELHIVERY_API_TOKEN/);
+  });
+
+  it("rejects a malformed Delhivery seller GSTIN", () => {
+    configureValidEnv();
+    process.env.DELHIVERY_SELLER_GST_TIN = "not-a-gstin";
+    expect(() => assertServerEnv({ production: true })).toThrow(/DELHIVERY_SELLER_GST_TIN/);
+  });
+
+  it("rejects a non-6-digit Delhivery pickup pincode", () => {
+    configureValidEnv();
+    process.env.DELHIVERY_PICKUP_PIN = "1100";
+    expect(() => assertServerEnv({ production: true })).toThrow(/DELHIVERY_PICKUP_PIN/);
+  });
+
+  it("requires the Delhivery webhook secret and rejects a short one", () => {
+    configureValidEnv();
+    process.env.DELHIVERY_WEBHOOK_SECRET = "short";
+    expect(() => assertServerEnv({ production: true })).toThrow(/DELHIVERY_WEBHOOK_SECRET/);
   });
 });
