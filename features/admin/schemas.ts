@@ -26,7 +26,7 @@ export const productCreateSchema = z.object(productFields).strict().superRefine(
 export const productCreateCompleteSchema = z.object({
   ...productFields,
   variant: z.object({
-    colorId: uuid, label: z.string().trim().min(1).max(100), sku: z.string().trim().min(1).max(80),
+    colorId: uuid.nullable(), label: z.string().trim().min(1).max(100), sku: z.string().trim().min(1).max(80),
     stockQuantity: z.number().int().nonnegative().max(1_000_000),
     lowStockThreshold: z.number().int().nonnegative().max(1_000_000).optional().default(5),
   }).strict(),
@@ -44,11 +44,11 @@ export const productUpdateSchema = z.object({
 export const publishProductSchema = z.object({ publish: z.boolean(), expectedVersion: version }).strict();
 
 export const variantCreateSchema = z.object({
-  colorId: uuid, label: z.string().trim().min(1).max(100), sku: z.string().trim().min(1).max(80), stockQuantity: z.number().int().nonnegative().max(1_000_000),
+  colorId: uuid.nullable(), label: z.string().trim().min(1).max(100), sku: z.string().trim().min(1).max(80), stockQuantity: z.number().int().nonnegative().max(1_000_000),
   lowStockThreshold: z.number().int().nonnegative().max(1_000_000).optional().default(5), sortOrder: z.number().int().optional().default(0),
 }).strict();
 export const variantUpdateSchema = z.object({
-  colorId: uuid.optional(), label: z.string().trim().min(1).max(100).optional(), sku: z.string().trim().min(1).max(80).optional(), stockQuantity: z.number().int().nonnegative().max(1_000_000).optional(),
+  colorId: uuid.nullable().optional(), label: z.string().trim().min(1).max(100).optional(), sku: z.string().trim().min(1).max(80).optional(), stockQuantity: z.number().int().nonnegative().max(1_000_000).optional(),
   lowStockThreshold: z.number().int().nonnegative().max(1_000_000).optional(), sortOrder: z.number().int().optional(), isActive: z.boolean().optional(), expectedVersion: version,
 }).strict();
 

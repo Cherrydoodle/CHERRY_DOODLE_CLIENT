@@ -8,10 +8,12 @@ export function formatEndsDate(endsAt: string | null) {
   return `Ends ${new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short" }).format(new Date(endsAt))}`;
 }
 
-// Most variants are still color-only, where label and color name are identical
-// (backfilled by the label migration) -- showing both would read as "Cherry · Cherry".
-// Only append the color when it adds information beyond the label itself.
-export function variantOptionLabel(variant: { label: string; color: { name: string } }) {
+// Most color-backed variants have label === color name (backfilled by the label
+// migration) -- showing both would read as "Cherry · Cherry". Only append the color
+// when it adds information beyond the label itself. A name-only variant has no color
+// to append at all.
+export function variantOptionLabel(variant: { label: string; color: { name: string } | null }) {
+  if (!variant.color) return variant.label;
   return variant.label.trim().toLowerCase() === variant.color.name.trim().toLowerCase()
     ? variant.label
     : `${variant.label} · ${variant.color.name}`;

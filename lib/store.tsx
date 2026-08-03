@@ -32,6 +32,20 @@ class ShopApiError extends Error {
   }
 }
 
+// Friendlier copy for codes the server can raise on add-to-cart, keyed by
+// ShopApiError.code. Mirrors app/checkout/checkout-view.tsx's FRIENDLY_MESSAGES
+// pattern for the same problem (a raw server `detail` string isn't always
+// customer-facing-ready). Falls back to the server's own message otherwise.
+const FRIENDLY_MESSAGES: Record<string, string> = {
+  OUT_OF_STOCK: "Sold out — this option just went out of stock.",
+  VARIANT_UNAVAILABLE: "This option is no longer available.",
+};
+
+function friendlyMessage(cause: unknown, fallback: string) {
+  if (!(cause instanceof ShopApiError)) return fallback;
+  return FRIENDLY_MESSAGES[cause.code] ?? cause.message;
+}
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
@@ -93,7 +107,7 @@ type ShopState = {
   closeCartDrawer: () => void;
   wishlist: ProductSummaryDTO[];
   wishlistLoading: boolean;
-  addToCart: (variantId: string, quantity?: number) => Promise<void>;
+  addToCart: (variantId: string, quantity?: number, options?: { silent?: boolean }) => Promise<void>;
   updateCartQuantity: (itemId: string, quantity: number) => Promise<void>;
   removeFromCart: (itemId: string) => Promise<void>;
   clearCart: () => Promise<void>;
@@ -195,7 +209,7 @@ export function ShopProvider({ children }: { children: ReactNode }) {
   const openCartDrawer = useCallback(() => setCartDrawerOpen(true), []);
   const closeCartDrawer = useCallback(() => setCartDrawerOpen(false), []);
 
-  const addToCart = useCallback(async (variantId: string, quantity = 1) => {
+  const addToCart = useCallback(async (variantId: string, quantity = 1, options?: { silent?: boolean }) => {
     try {
       const updated = await apiFetch<CartDTO>("/api/v1/cart/items", {
         method: "POST",
@@ -218,7 +232,9 @@ export function ShopProvider({ children }: { children: ReactNode }) {
         });
       }
     } catch (cause) {
-      toast.error(cause instanceof ShopApiError ? cause.message : "Could not add this to your bag. Please try again.");
+      // silent: true lets a caller with its own inline error UI (the product detail
+      // page) own the message instead of also popping the global toast.
+      if (!options?.silent) toast.error(friendlyMessage(cause, "Could not add this to your bag. Please try again."));
       throw cause;
     }
   }, []);
@@ -282,12 +298,17 @@ export function ShopProvider({ children }: { children: ReactNode }) {
   const moveToCart = useCallback(
     async (productId: string) => {
       if (authenticated) {
-        const result = await apiFetch<{ cart: CartDTO; wishlist: { items: ProductSummaryDTO[] } }>(`/api/v1/wishlist/${productId}/move-to-cart`, {
-          method: "POST",
-          body: JSON.stringify({}),
-        });
-        setCart(result.cart);
-        setWishlist(result.wishlist.items);
+        try {
+          const result = await apiFetch<{ cart: CartDTO; wishlist: { items: ProductSummaryDTO[] } }>(`/api/v1/wishlist/${productId}/move-to-cart`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          setCart(result.cart);
+          setWishlist(result.wishlist.items);
+        } catch (cause) {
+          toast.error(friendlyMessage(cause, "Could not move this to your bag. Please try again."));
+          throw cause;
+        }
         return;
       }
       const product = wishlist.find((item) => item.id === productId);

@@ -324,7 +324,7 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
         billingAddress,
         termsAccepted: true,
         customerNote: String(form.get("note") || "") || undefined,
-        items: items.map((item) => ({ productSlug: item.product.slug, variantId: item.variant.id, color: item.variant.color.name, quantity: item.quantity })),
+        items: items.map((item) => ({ productSlug: item.product.slug, variantId: item.variant.id, color: item.variant.color?.name, quantity: item.quantity })),
       }, startKey.current);
 
       if (saveNewAddress) {

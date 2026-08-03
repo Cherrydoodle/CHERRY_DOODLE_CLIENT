@@ -47,7 +47,7 @@ type RawVariant = {
   is_active: boolean;
   deleted_at: string | null;
   sort_order: number;
-  colors: RawColor | RawColor[];
+  colors: RawColor | RawColor[] | null;
 };
 
 type ResolvedLine = {
@@ -55,7 +55,7 @@ type ResolvedLine = {
   productVariantId: string;
   productSlug: string;
   productName: string;
-  color: string;
+  color: string | null;
   variantLabel: string;
   sku: string;
   quantity: number;
@@ -165,7 +165,7 @@ export async function resolveCheckoutLines(input: CheckoutStartInput) {
       productVariantId: variant.id,
       productSlug: product.slug,
       productName: product.name,
-      color: color.name,
+      color: color?.name ?? null,
       variantLabel: variant.label,
       sku: variant.sku,
       quantity,
