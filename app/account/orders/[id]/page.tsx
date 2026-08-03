@@ -101,6 +101,21 @@ export default async function AccountOrderDetailPage({ params }: { params: Promi
               Track your package →
             </a>
           )}
+          {order.shipmentScans.length > 0 && (
+            <ol className="mt-4 space-y-3 border-t pt-4">
+              {order.shipmentScans.slice().reverse().map((scan, index) => (
+                <li key={`${scan.scannedAt}-${index}`} className="flex justify-between gap-3">
+                  <div>
+                    <p className="font-medium text-foreground">{scan.status}</p>
+                    {scan.location && <p className="text-xs text-muted-foreground">{scan.location}</p>}
+                  </div>
+                  <time dateTime={scan.scannedAt} className="shrink-0 text-xs text-muted-foreground">
+                    {new Date(scan.scannedAt).toLocaleString()}
+                  </time>
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       )}
 

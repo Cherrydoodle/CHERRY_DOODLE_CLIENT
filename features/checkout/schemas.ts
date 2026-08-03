@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { normalizeIndianPin } from "@/features/delhivery/normalize";
+
 const slugSchema = z.string().trim().min(1).max(160).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 export const checkoutAddressSchema = z.object({
@@ -9,7 +11,13 @@ export const checkoutAddressSchema = z.object({
   state: z.string().trim().min(2).max(100),
   postalCode: z.string().trim().min(3).max(20).regex(/^[A-Za-z0-9 -]+$/),
   country: z.string().trim().length(2).transform((value) => value.toUpperCase()),
-}).strict();
+}).strict().superRefine((value, context) => {
+  // India is this store's only serviceable country (app/shipping/page.tsx), and
+  // Delhivery's manifest API rejects anything but a strict 6-digit pincode.
+  if (value.country === "IN" && !normalizeIndianPin(value.postalCode)) {
+    context.addIssue({ code: "custom", path: ["postalCode"], message: "Enter a valid 6-digit Indian pincode." });
+  }
+});
 
 export const checkoutStartSchema = z.object({
   customer: z.object({

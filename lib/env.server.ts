@@ -97,6 +97,82 @@ export function requireRazorpayWebhookSecret() {
   return { current, previous } as const;
 }
 
+const DELHIVERY_BASE_URLS = { test: "https://staging-express.delhivery.com", live: "https://track.delhivery.com" } as const;
+
+export function requireDelhiveryConfig() {
+  const apiToken = process.env.DELHIVERY_API_TOKEN?.trim();
+  const mode = process.env.DELHIVERY_MODE?.trim() || "test";
+  const clientName = process.env.DELHIVERY_CLIENT_NAME?.trim();
+  const pickupLocationName = process.env.DELHIVERY_PICKUP_LOCATION_NAME?.trim();
+  const pickupAddress = process.env.DELHIVERY_PICKUP_ADDRESS?.trim();
+  const pickupCity = process.env.DELHIVERY_PICKUP_CITY?.trim();
+  const pickupState = process.env.DELHIVERY_PICKUP_STATE?.trim();
+  const pickupPin = process.env.DELHIVERY_PICKUP_PIN?.trim();
+  const pickupPhone = process.env.DELHIVERY_PICKUP_PHONE?.trim();
+  const sellerGstTin = process.env.DELHIVERY_SELLER_GST_TIN?.trim();
+  const defaultHsnCode = process.env.DELHIVERY_DEFAULT_HSN_CODE?.trim();
+
+  if (!apiToken || !clientName || !pickupLocationName || !pickupAddress || !pickupCity || !pickupState || !pickupPin || !pickupPhone || !sellerGstTin || !defaultHsnCode) {
+    throw new ConfigurationError(
+      "Delhivery is not configured. Set DELHIVERY_API_TOKEN, DELHIVERY_CLIENT_NAME, DELHIVERY_PICKUP_LOCATION_NAME, DELHIVERY_PICKUP_ADDRESS, DELHIVERY_PICKUP_CITY, DELHIVERY_PICKUP_STATE, DELHIVERY_PICKUP_PIN, DELHIVERY_PICKUP_PHONE, DELHIVERY_SELLER_GST_TIN, and DELHIVERY_DEFAULT_HSN_CODE.",
+    );
+  }
+  if (mode !== "test" && mode !== "live") throw new ConfigurationError("DELHIVERY_MODE must be either test or live.");
+  if (!/^[1-9][0-9]{5}$/.test(pickupPin)) throw new ConfigurationError("DELHIVERY_PICKUP_PIN must be a 6-digit Indian pincode.");
+  if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3}$/.test(sellerGstTin)) throw new ConfigurationError("DELHIVERY_SELLER_GST_TIN has an invalid GSTIN format.");
+  if (!/^[0-9]{4,8}$/.test(defaultHsnCode)) throw new ConfigurationError("DELHIVERY_DEFAULT_HSN_CODE must be a 4-8 digit HSN code.");
+
+  const defaultWeightGrams = parseDelhiveryDimension("DELHIVERY_DEFAULT_PARCEL_WEIGHT_GRAMS", 500, 1, 50_000);
+  const defaultLengthCm = parseDelhiveryDimension("DELHIVERY_DEFAULT_PARCEL_L_CM", 20, 1, 200);
+  const defaultBreadthCm = parseDelhiveryDimension("DELHIVERY_DEFAULT_PARCEL_B_CM", 15, 1, 200);
+  const defaultHeightCm = parseDelhiveryDimension("DELHIVERY_DEFAULT_PARCEL_H_CM", 10, 1, 200);
+
+  return {
+    apiToken,
+    mode: mode as "test" | "live",
+    baseUrl: DELHIVERY_BASE_URLS[mode as "test" | "live"],
+    clientName,
+    pickupLocationName,
+    pickupAddress,
+    pickupCity,
+    pickupState,
+    pickupPin,
+    pickupPhone,
+    sellerGstTin,
+    defaultHsnCode,
+    defaultWeightGrams,
+    defaultLengthCm,
+    defaultBreadthCm,
+    defaultHeightCm,
+  } as const;
+}
+
+function parseDelhiveryDimension(name: string, developmentFallback: number, min: number, max: number) {
+  const raw = process.env[name]?.trim();
+  if (!raw) return developmentFallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new ConfigurationError(`${name} must be an integer between ${min} and ${max}.`);
+  }
+  return value;
+}
+
+/**
+ * Bearer secret Delhivery's tracking push webhook must present. Delhivery does not
+ * sign its push payloads (unlike Razorpay's HMAC), so this shared secret is the only
+ * thing standing between the internet and the order state machine -- see the same
+ * `_PREVIOUS` rotation-overlap rationale as requireRazorpayWebhookSecret above.
+ */
+export function requireDelhiveryWebhookSecret() {
+  const current = process.env.DELHIVERY_WEBHOOK_SECRET?.trim();
+  if (!current) throw new ConfigurationError("DELHIVERY_WEBHOOK_SECRET is required for the Delhivery tracking webhook.");
+  const previous = process.env.DELHIVERY_WEBHOOK_SECRET_PREVIOUS?.trim() || null;
+  if (previous && previous === current) {
+    throw new ConfigurationError("DELHIVERY_WEBHOOK_SECRET_PREVIOUS must differ from DELHIVERY_WEBHOOK_SECRET (or be removed).");
+  }
+  return { current, previous } as const;
+}
+
 export function requireCronSecret() {
   const cronSecret = process.env.CRON_SECRET?.trim();
   if (!cronSecret) throw new ConfigurationError("CRON_SECRET is required to authorize scheduled jobs.");
@@ -161,6 +237,8 @@ const OWNER_GENERATED_SECRETS = [
   "CRON_SECRET",
   "RAZORPAY_WEBHOOK_SECRET",
   "RAZORPAY_WEBHOOK_SECRET_PREVIOUS",
+  "DELHIVERY_WEBHOOK_SECRET",
+  "DELHIVERY_WEBHOOK_SECRET_PREVIOUS",
 ] as const;
 
 const MIN_SECRET_LENGTH = 32;
@@ -182,6 +260,11 @@ const REQUIRED_PRODUCTION_VALUES = [
   "GUEST_CART_TOKEN_PEPPER",
   "APP_HMAC_SECRET",
   "CRON_SECRET",
+  "DELHIVERY_API_TOKEN",
+  "DELHIVERY_CLIENT_NAME",
+  "DELHIVERY_PICKUP_LOCATION_NAME",
+  "DELHIVERY_SELLER_GST_TIN",
+  "DELHIVERY_WEBHOOK_SECRET",
 ] as const;
 
 const PLACEHOLDER_PATTERN = /replace|your-project-ref|changeme|example\.com/i;
@@ -215,6 +298,8 @@ export function assertServerEnv(options: { production?: boolean } = {}): void {
   collect(() => requireApplicationSecrets());
   collect(() => requireCronSecret());
   collect(() => requireCheckoutPricingConfig(production));
+  collect(() => requireDelhiveryConfig());
+  collect(() => requireDelhiveryWebhookSecret());
 
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim();
   if (!siteUrl) {

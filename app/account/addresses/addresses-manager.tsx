@@ -221,6 +221,33 @@ function AddressForm({ initial, submitting, onCancel, onSubmit }: {
   onCancel: () => void;
   onSubmit: (values: typeof emptyForm) => void;
 }) {
+  const [postalCode, setPostalCode] = useState(initial.postalCode);
+  const [countryCode, setCountryCode] = useState(initial.countryCode);
+  // Soft, non-blocking heads-up only -- unlike checkout, saving an address never
+  // touches Delhivery, so an unserviceable pincode here is just a hint, not a gate.
+  const [serviceabilityWarning, setServiceabilityWarning] = useState(false);
+
+  // Mirrors the debounced fetch below's status into state; there is no way to
+  // compute this during render since it depends on an in-flight network request.
+  useEffect(() => {
+    if (countryCode !== "IN" || !/^[1-9][0-9]{5}$/.test(postalCode.replace(/\s/g, ""))) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setServiceabilityWarning(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      fetch(`/api/v1/shipping/serviceability?pincode=${encodeURIComponent(postalCode)}`, { signal: controller.signal })
+        .then((response) => response.json())
+        .then((payload) => setServiceabilityWarning(payload?.data?.serviceable === false))
+        .catch(() => setServiceabilityWarning(false));
+    }, 500);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [postalCode, countryCode]);
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -250,9 +277,14 @@ function AddressForm({ initial, submitting, onCancel, onSubmit }: {
       <div className="grid gap-3 sm:grid-cols-3">
         <Field name="city" label="City" defaultValue={initial.city} minLength={2} />
         <Field name="state" label="State" defaultValue={initial.state} minLength={2} />
-        <Field name="postalCode" label="Postal code" defaultValue={initial.postalCode} minLength={3} />
+        <Field name="postalCode" label="Postal code" value={postalCode} onChange={(event) => setPostalCode(event.target.value)} minLength={3} />
       </div>
-      <Field name="countryCode" label="Country code" defaultValue={initial.countryCode} maxLength={2} />
+      {serviceabilityWarning && (
+        <p className="rounded-2xl bg-amber-50 px-4 py-2 text-xs text-amber-800">
+          Heads up: we can&apos;t currently deliver to this pincode. You can still save the address.
+        </p>
+      )}
+      <Field name="countryCode" label="Country code" value={countryCode} onChange={(event) => setCountryCode(event.target.value.toUpperCase())} maxLength={2} />
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" name="isDefault" defaultChecked={initial.isDefault} />
         Set as default address

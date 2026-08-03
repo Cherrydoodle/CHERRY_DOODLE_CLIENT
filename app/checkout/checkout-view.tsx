@@ -161,6 +161,46 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
   const items = cart.items;
   const selectedAddress = savedAddresses.find((address) => address.id === selectedAddressId) ?? null;
 
+  // Live pincode serviceability, checked as the shopper types/selects an address so
+  // an unshippable pincode is caught before they advance past step 1 (the server
+  // enforces the same check again in startRazorpayCheckout -- this is purely a
+  // faster, friendlier signal, not the source of truth).
+  const [shippingPostalCode, setShippingPostalCode] = useState(selectedAddress?.postalCode ?? "");
+  const [shippingCountry, setShippingCountry] = useState(selectedAddress?.countryCode ?? "IN");
+  const [serviceability, setServiceability] = useState<"idle" | "checking" | "serviceable" | "not-serviceable">("idle");
+
+  // Resets the controlled fields to match a different saved address the shopper
+  // just picked (an external UI action, not state derivable from props during render).
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setShippingPostalCode(selectedAddress?.postalCode ?? "");
+    setShippingCountry(selectedAddress?.countryCode ?? "IN");
+  }, [selectedAddress]);
+
+  // Mirrors the debounced fetch below's status into state; there is no way to
+  // compute this during render since it depends on an in-flight network request.
+  useEffect(() => {
+    if (shippingCountry !== "IN" || !/^[1-9][0-9]{5}$/.test(shippingPostalCode.replace(/\s/g, ""))) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setServiceability("idle");
+      return;
+    }
+    setServiceability("checking");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      fetch(`/api/v1/shipping/serviceability?pincode=${encodeURIComponent(shippingPostalCode)}`, { signal: controller.signal })
+        .then((response) => response.json())
+        .then((payload) => setServiceability(payload?.data?.serviceable ? "serviceable" : "not-serviceable"))
+        // A failed/unreachable check must not block the shopper from continuing --
+        // the server's own fail-open gate is the real backstop.
+        .catch(() => setServiceability("idle"));
+    }, 500);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [shippingPostalCode, shippingCountry]);
+
   useEffect(() => {
     if (!session) return;
     const interval = window.setInterval(() => setNow(Date.now()), 1000);
@@ -385,6 +425,9 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
         }
       }
     }
+    // The inline "not serviceable" banner in the shipping-address section (below)
+    // is already visible at this point -- this just stops the advance to step 2.
+    if (serviceability === "not-serviceable") return;
     if (formRef.current) {
       const form = new FormData(formRef.current);
       const label = isAuthenticated && selectedAddressId !== "new" ? selectedAddress?.label ?? null : null;
@@ -510,8 +553,28 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
                   <Field label="Address line 2 (optional)" name="line2" autoComplete="address-line2" maxLength={200} required={false} className="sm:col-span-2" defaultValue={selectedAddress?.line2 ?? undefined} />
                   <Field label="City" name="city" autoComplete="address-level2" minLength={2} maxLength={100} defaultValue={selectedAddress?.city} />
                   <Field label="State" name="state" autoComplete="address-level1" minLength={2} maxLength={100} defaultValue={selectedAddress?.state} />
-                  <Field label="Postal code" name="postalCode" autoComplete="postal-code" minLength={3} maxLength={20} defaultValue={selectedAddress?.postalCode} />
-                  <Field label="Country code" name="country" autoComplete="country" minLength={2} maxLength={2} defaultValue={selectedAddress?.countryCode ?? "IN"} />
+                  <label className="text-sm font-bold">
+                    Postal code
+                    <input
+                      name="postalCode" autoComplete="postal-code" minLength={3} maxLength={20} required
+                      value={shippingPostalCode} onChange={(event) => setShippingPostalCode(event.target.value)}
+                      className="mt-1.5 w-full rounded-2xl border bg-white px-4 py-3 font-normal outline-none focus:border-primary"
+                    />
+                  </label>
+                  <label className="text-sm font-bold">
+                    Country code
+                    <input
+                      name="country" autoComplete="country" minLength={2} maxLength={2} required
+                      value={shippingCountry} onChange={(event) => setShippingCountry(event.target.value.toUpperCase())}
+                      className="mt-1.5 w-full rounded-2xl border bg-white px-4 py-3 font-normal outline-none focus:border-primary"
+                    />
+                  </label>
+                  {serviceability === "not-serviceable" && (
+                    <div role="alert" className="sm:col-span-2 flex gap-2 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                      <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                      <span>We can&apos;t deliver to this pincode yet. Please double-check it or use a different address.</span>
+                    </div>
+                  )}
                   {isAuthenticated && selectedAddressId === "new" && (
                     <label className="sm:col-span-2 flex items-center gap-2 text-sm">
                       <input type="checkbox" name="saveAddress" defaultChecked className="h-4 w-4 accent-primary" />
@@ -643,7 +706,7 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
               <button
                 type={step === 3 ? "submit" : "button"}
                 onClick={step === 1 ? goToStep2 : step === 2 ? () => goToStep(3) : undefined}
-                disabled={step === 3 && (processing || !scriptReady || expired)}
+                disabled={(step === 1 && serviceability === "not-serviceable") || (step === 3 && (processing || !scriptReady || expired))}
                 className="btn-primary mt-5 w-full disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {step === 1 && "Deliver here"}
@@ -678,7 +741,7 @@ export function CheckoutView({ isAuthenticated, savedAddresses, nonce }: { isAut
             type={step === 3 ? "submit" : "button"}
             form="checkout-form"
             onClick={step === 1 ? goToStep2 : step === 2 ? () => goToStep(3) : undefined}
-            disabled={step === 3 && (processing || !scriptReady || expired)}
+            disabled={(step === 1 && serviceability === "not-serviceable") || (step === 3 && (processing || !scriptReady || expired))}
             className="btn-primary shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {step === 1 && "Deliver here"}

@@ -14,6 +14,7 @@ const DEFAULT_SCHEDULES = {
   "media-cleanup": "0 * * * *",
   "payment-reconciliation": "0 * * * *",
   "offer-schedule": "*/5 * * * *",
+  "delhivery-tracking": "*/15 * * * *",
 } as const;
 
 type MonitorSlug = keyof typeof DEFAULT_SCHEDULES;

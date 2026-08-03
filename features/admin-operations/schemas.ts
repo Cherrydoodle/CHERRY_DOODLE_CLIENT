@@ -9,6 +9,10 @@ export const orderUpdateSchema = z.object({
   carrier: z.string().trim().min(1).max(80).nullable().optional(),
   trackingNumber: z.string().trim().min(1).max(100).nullable().optional(),
   trackingUrl: z.string().trim().url().max(500).nullable().optional(),
+  // Required only when cancelling an order that has a live Delhivery shipment --
+  // see updateOrder's cancel guard. Confirms the admin has separately cancelled the
+  // waybill in Delhivery's own panel (the Cancel Order API itself is out of scope).
+  acknowledgeShipmentCancelled: z.boolean().optional(),
   expectedVersion: z.number().int().positive(),
 }).strict().superRefine((value, context) => {
   if (value.statusReason && !value.status) context.addIssue({ code: "custom", path: ["statusReason"], message: "A status reason requires a status change." });

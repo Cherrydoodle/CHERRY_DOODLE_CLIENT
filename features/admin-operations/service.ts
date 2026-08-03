@@ -8,6 +8,7 @@ import { logger } from "@/lib/observability/logger";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { mediaImageDto, privateMediaUrl, resolveReadyMediaImage } from "@/features/media/delivery";
+import { acknowledgeShipmentCancellation, getShipmentForOrder, hasActiveShipment } from "@/features/delhivery/service";
 import type { adminProfileUpdateSchema, colorCreateSchema, colorUpdateSchema, orderUpdateSchema, storeSettingsUpdateSchema } from "@/features/admin-operations/schemas";
 
 type OrderUpdate = z.infer<typeof orderUpdateSchema>;
@@ -172,6 +173,8 @@ export async function getOrder(orderId: string) {
   if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Order details could not be loaded.");
   if (!data) throw new ApiError(404, "NOT_FOUND", "Order not found.");
 
+  const shipment = await getShipmentForOrder(orderId);
+
   // payment_attempts has no direct FK to orders (it hangs off checkout_sessions),
   // so its full timeline -- provider ids, method, status, errors -- is fetched
   // with the same two-step lookup used by listOrders' payment-id search.
@@ -204,6 +207,7 @@ export async function getOrder(orderId: string) {
     ...orderSummary(data), shippingAddress: data.shipping_address, customerNote: data.customer_note,
     subtotalMinor: data.subtotal_minor, discountMinor: data.discount_minor, shippingMinor: data.shipping_minor, taxMinor: data.tax_minor,
     carrier: data.carrier ?? null, trackingNumber: data.tracking_number ?? null, trackingUrl: data.tracking_url ?? null,
+    shipment,
     items,
     statusHistory: (data.order_status_history ?? []).filter((row: Record<string, unknown>) => !row.deleted_at).map((row: Record<string, unknown>) => ({ id: String(row.id), from: row.from_status, to: row.to_status, reason: row.reason, changedBy: row.changed_by, createdAt: row.created_at })),
     internalNotes: (data.order_internal_notes ?? []).filter((row: Record<string, unknown>) => !row.deleted_at).map((row: Record<string, unknown>) => ({ id: String(row.id), body: row.body, authorUserId: row.author_user_id, createdAt: row.created_at, updatedAt: row.updated_at })),
@@ -232,6 +236,13 @@ export async function updateOrder(orderId: string, input: OrderUpdate, actor: Au
   if (before.version !== input.expectedVersion) throw new ApiError(409, "VERSION_CONFLICT", "Order was changed by another user.");
   const admin = createAdminSupabaseClient();
   if (input.status && input.status !== before.status) {
+    // A manifested Delhivery waybill is a physical parcel already moving through a
+    // real courier network -- cancelling the order here must not silently diverge
+    // from that. The admin must acknowledge they've separately cancelled it in
+    // Delhivery's own panel (the Cancel Order API itself is out of scope for now).
+    if (input.status === "cancelled" && !input.acknowledgeShipmentCancelled && (await hasActiveShipment(orderId))) {
+      throw new ApiError(409, "SHIPMENT_ACTIVE", "This order has an active Delhivery shipment. Cancel the waybill in Delhivery first, then confirm.");
+    }
     const { error } = await admin.rpc("transition_order_status", {
       p_order_id: orderId, p_expected_version: input.expectedVersion, p_new_status: input.status,
       p_actor_id: actor.userId, p_reason: input.statusReason ?? null,
@@ -240,6 +251,9 @@ export async function updateOrder(orderId: string, input: OrderUpdate, actor: Au
       if (error.message.includes("VERSION_CONFLICT")) throw new ApiError(409, "VERSION_CONFLICT", "Order was changed by another user.");
       if (error.message.includes("INVALID_ORDER_TRANSITION")) throw new ApiError(409, "INVALID_ORDER_TRANSITION", "The requested order status transition is not allowed.");
       throw new ApiError(503, "SERVICE_UNAVAILABLE", "Order status could not be updated.");
+    }
+    if (input.status === "cancelled" && input.acknowledgeShipmentCancelled) {
+      await acknowledgeShipmentCancellation(orderId, actor);
     }
   }
   if (input.internalNote) {

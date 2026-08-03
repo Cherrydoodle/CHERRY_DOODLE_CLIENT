@@ -8,6 +8,7 @@ import { ApiError } from "@/lib/http/problem";
 import { logger } from "@/lib/observability/logger";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { enqueueEmail } from "@/features/email/service";
+import { assertPincodeServiceableForCheckout } from "@/features/delhivery/service";
 import type { CheckoutConfirmationInput, CheckoutStartInput, CheckoutVerifyInput } from "@/features/checkout/schemas";
 import { razorpayWebhookSchema } from "@/features/checkout/schemas";
 import { resolveOfferPrices } from "@/features/offers/pricing";
@@ -215,6 +216,9 @@ export async function startRazorpayCheckout(input: CheckoutStartInput, authConte
   // context avoids validating the same token twice per checkout start. It stays
   // optional so every other caller keeps the original, self-contained behaviour.
   const auth = authContext ?? (await requireUser());
+  // Fail-open on a Delhivery outage (see assertPincodeServiceableForCheckout) --
+  // only a confirmed non-serviceable pincode blocks the sale here.
+  await assertPincodeServiceableForCheckout({ postalCode: input.shippingAddress.postalCode, country: input.shippingAddress.country });
   const resolved = await resolveCheckoutLines(input);
   if (resolved.totalMinor < 100) throw new ApiError(422, "ORDER_TOTAL_TOO_LOW", "The order total is below the payment provider minimum.");
 
