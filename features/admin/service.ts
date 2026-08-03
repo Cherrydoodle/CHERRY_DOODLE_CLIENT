@@ -191,6 +191,26 @@ export async function listAdminProducts(options: { status?: string; query?: stri
   }), total: count ?? 0, page: options.page, limit: options.limit };
 }
 
+// Backed by admin_out_of_stock_variants (supabase/migrations/202608030002_out_of_stock_attempts.sql),
+// which pre-aggregates attempt counts per variant since PostgREST cannot express GROUP BY.
+export async function listOutOfStockVariants(options: { query?: string; page: number; limit: number }) {
+  const admin = createAdminSupabaseClient();
+  let query = admin.from("admin_out_of_stock_variants").select("*", { count: "exact" });
+  if (options.query) query = query.ilike("product_name", `%${options.query}%`);
+  const start = (options.page - 1) * options.limit;
+  const { data, error, count } = await query.order("attempt_count", { ascending: false }).order("product_name").range(start, start + options.limit - 1);
+  if (error) throw new ApiError(503, "SERVICE_UNAVAILABLE", "Out-of-stock variants could not be loaded.");
+  return {
+    items: (data ?? []).map((row) => ({
+      variantId: row.variant_id, sku: row.sku, label: row.label,
+      color: row.color_id ? { id: row.color_id, name: row.color_name, hex: row.color_hex } : null,
+      productId: row.product_id, productName: row.product_name, productSlug: row.product_slug, productStatus: row.product_status,
+      attemptCount: row.attempt_count, attemptsLast7d: row.attempts_last_7d, lastAttemptedAt: row.last_attempted_at,
+    })),
+    total: count ?? 0, page: options.page, limit: options.limit,
+  };
+}
+
 export async function getAdminProduct(id: string) {
   const admin = createAdminSupabaseClient();
   const { data, error } = await admin.from("products").select(`

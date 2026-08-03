@@ -74,12 +74,14 @@ export function ProductCard({ product }: { product: ProductSummaryDTO }) {
             <span className="font-bold">{formatMoney(product.pricing.listCents, product.pricing.currency)}</span>
           )}
         </div>
-        <div className="flex items-center gap-1.5 mt-1">
-          {product.colors.slice(0, 4).map((color) => (
-            <span key={color.id} title={color.name} className="h-4 w-4 rounded-full border border-border shadow-sm" style={{ background: color.hex }} />
-          ))}
-          {product.colors.length > 4 && <span className="text-[10px] text-muted-foreground">+{product.colors.length - 4}</span>}
-        </div>
+        {product.colors.length > 0 && (
+          <div className="flex items-center gap-1.5 mt-1">
+            {product.colors.slice(0, 4).map((color) => (
+              <span key={color.id} title={color.name} className="h-4 w-4 rounded-full border border-border shadow-sm" style={{ background: color.hex }} />
+            ))}
+            {product.colors.length > 4 && <span className="text-[10px] text-muted-foreground">+{product.colors.length - 4}</span>}
+          </div>
+        )}
         {canQuickAdd && (
           <button
             type="button"

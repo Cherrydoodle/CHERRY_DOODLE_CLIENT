@@ -7,7 +7,7 @@ import { z } from "zod";
 import { mediaImageDto } from "@/features/media/delivery";
 import { decodeCursor, encodeCursor } from "@/features/catalog/cursor";
 import { staticCategories, staticHome, staticListProducts, staticProductDetail } from "@/features/catalog/static-repository";
-import type { Availability, CategoryDTO, HomeDTO, ImageDTO, MarqueeItemDTO, ProductDetailDTO, ProductFilters, ProductListDTO, ProductSummaryDTO, ReelDTO } from "@/features/catalog/types";
+import type { Availability, CategoryDTO, HomeDTO, ImageDTO, MarqueeItemDTO, ProductDetailDTO, ProductFilters, ProductListDTO, ProductSummaryDTO, ReelDTO, VariantOptionDTO } from "@/features/catalog/types";
 import { listActiveOffers } from "@/features/offers/repository";
 import { ApiError } from "@/lib/http/problem";
 import { getPublicSupabaseConfig } from "@/lib/public-env";
@@ -36,8 +36,11 @@ function catalogUnavailable(operation: string, message: string, error: Postgrest
   return new ApiError(503, "SERVICE_UNAVAILABLE", message, undefined, { cause: error });
 }
 
+// A colorless (name-only) variant carries null id/name/slug/hex -- see the LEFT JOIN
+// in supabase/migrations/202608030001_optional_variant_color.sql.
 const colorSchema = z.object({
-  id: z.string().uuid(), name: z.string(), slug: z.string(), hex: z.string(), variantId: z.string().uuid(), label: z.string(), sku: z.string(),
+  id: z.string().uuid().nullable(), name: z.string().nullable(), slug: z.string().nullable(), hex: z.string().nullable(),
+  variantId: z.string().uuid(), label: z.string(), sku: z.string(),
   stockQuantity: z.number().int().nonnegative(), lowStockThreshold: z.number().int().nonnegative(),
 });
 
@@ -93,7 +96,9 @@ function summaryFromRow(input: unknown): ProductSummaryDTO {
     pricing: { currency: row.currency, listCents: row.base_price_cents, saleCents: row.offer_price_cents ?? row.sale_price_cents, effectiveCents: row.effective_price_cents, offer },
     primaryImage,
     cardImages,
-    colors: row.colors.map((color) => ({ id: color.id, name: color.name, slug: color.slug, hex: color.hex })),
+    // Colorless (name-only) variants have nothing to contribute to the card's swatch
+    // row, so they're excluded here rather than rendered as an empty/null swatch.
+    colors: row.colors.flatMap((color) => (color.id && color.name && color.slug && color.hex ? [{ id: color.id, name: color.name, slug: color.slug, hex: color.hex }] : [])),
     defaultVariantId: defaultColor?.variantId ?? null,
     rating: { average: row.aggregate_rating, count: row.review_count },
     badges: row.badges,
@@ -311,15 +316,19 @@ async function fetchProductDetail(slug: string): Promise<ProductDetailDTO | null
     size: row.size,
     category: { slug: row.subcategory_slug, name: row.subcategory_name, parent: { slug: row.top_category_slug, name: row.top_category_name } },
     gallery: gallery.length ? gallery : [summary.primaryImage],
-    variants: row.colors.map((color) => ({
-      id: color.variantId,
-      sku: color.sku,
-      label: color.label,
-      color: { id: color.id, name: color.name, slug: color.slug, hex: color.hex },
-      images: imagesByVariant.get(color.variantId) ?? [],
-      availability: (color.stockQuantity <= 0 ? "out_of_stock" : color.stockQuantity <= color.lowStockThreshold ? "low_stock" : "in_stock") as Availability,
-      maxQuantity: Math.min(99, color.stockQuantity),
-    })),
+    variants: row.colors.map((color): VariantOptionDTO => {
+      const base = {
+        id: color.variantId,
+        sku: color.sku,
+        label: color.label,
+        images: imagesByVariant.get(color.variantId) ?? [],
+        availability: (color.stockQuantity <= 0 ? "out_of_stock" : color.stockQuantity <= color.lowStockThreshold ? "low_stock" : "in_stock") as Availability,
+        maxQuantity: Math.min(99, color.stockQuantity),
+      };
+      return color.id && color.name && color.slug && color.hex
+        ? { ...base, kind: "color", color: { id: color.id, name: color.name, slug: color.slug, hex: color.hex } }
+        : { ...base, kind: "name", color: null };
+    }),
     shippingMessage: "Shipping is calculated at checkout. We ship across India via Delhivery, dispatched in 1–2 business days.",
     returnsMessage: "Returns within 7 days for unused items in original packaging (damaged or wrong items).",
     related: related.items.filter((item) => item.id !== row.id).slice(0, 4),

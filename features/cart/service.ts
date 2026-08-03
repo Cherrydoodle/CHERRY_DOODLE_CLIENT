@@ -10,6 +10,7 @@ import { resolveOfferPrices, type ResolvedOfferPrice } from "@/features/offers/p
 import { optionalAuth, requireUser } from "@/lib/auth/authorization";
 import { requireApplicationSecrets, requireCheckoutPricingConfig } from "@/lib/env.server";
 import { ApiError } from "@/lib/http/problem";
+import { logger } from "@/lib/observability/logger";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 
 const GUEST_COOKIE = "cd_guest_cart";
@@ -25,7 +26,7 @@ type RawProduct = {
 };
 type RawVariant = {
   id: string; sku: string; label: string; stock_quantity: number; low_stock_threshold: number; is_active: boolean; deleted_at: string | null;
-  colors: RawColor | RawColor[]; products: RawProduct | RawProduct[];
+  colors: RawColor | RawColor[] | null; products: RawProduct | RawProduct[];
 };
 type RawCartItem = { id: string; quantity: number; product_variant_id: string };
 
@@ -85,7 +86,7 @@ function cartCurrency(dtoItems: CartDTO["items"]): string {
   return dtoItems[0]?.product.pricing.currency ?? "INR";
 }
 
-function productSummary(product: RawProduct, variant: RawVariant, color: RawColor, offer: ResolvedOfferPrice | null): ProductSummaryDTO {
+function productSummary(product: RawProduct, variant: RawVariant, color: RawColor | null, offer: ResolvedOfferPrice | null): ProductSummaryDTO {
   const mediaRelation = product.product_media.find((entry) => entry.is_primary);
   const media = mediaRelation ? one(mediaRelation.media_assets) : undefined;
   const fallback = { id: product.id, alt: product.name, width: 1, height: 1, urls: { thumb: "/favicon.ico", card: "/favicon.ico", detail: "/favicon.ico" } };
@@ -101,7 +102,7 @@ function productSummary(product: RawProduct, variant: RawVariant, color: RawColo
     },
     primaryImage,
     cardImages: [primaryImage],
-    colors: [{ id: color.id, name: color.name, slug: color.slug, hex: color.hex_code }],
+    colors: color ? [{ id: color.id, name: color.name, slug: color.slug, hex: color.hex_code }] : [],
     defaultVariantId: variant.id,
     rating: { average: Number(product.aggregate_rating), count: product.review_count },
     badges: product.product_badges.map((badge) => badge.badge),
@@ -140,14 +141,14 @@ export async function getCartById(cart: CartRecord, owner: "guest" | "user"): Pr
     const variant = variantsById.get(item.product_variant_id);
     if (!variant) continue;
     const product = one(variant.products);
-    const color = one(variant.colors);
-    if (!product || !color) continue;
+    if (!product) continue;
+    const color = variant.colors ? one(variant.colors) : null;
     const offer = offers.get(product.id) ?? null;
     const unavailable = !variant.is_active || variant.deleted_at !== null || product.status !== "published" || product.deleted_at !== null || variant.stock_quantity <= 0;
     const warning = unavailable ? "out_of_stock" : item.quantity > variant.stock_quantity ? "quantity_reduced" : null;
     const unit = offer?.offerPriceCents ?? product.sale_price_cents ?? product.base_price_cents;
     dtoItems.push({
-      id: item.id, quantity: item.quantity, variant: { id: variant.id, sku: variant.sku, label: variant.label, color: { id: color.id, name: color.name, slug: color.slug, hex: color.hex_code } },
+      id: item.id, quantity: item.quantity, variant: { id: variant.id, sku: variant.sku, label: variant.label, color: color ? { id: color.id, name: color.name, slug: color.slug, hex: color.hex_code } : null },
       product: productSummary(product, variant, color, offer), unitPriceCents: unit, lineTotalCents: unit * item.quantity,
       originalLineTotalCents: product.base_price_cents * item.quantity, warning,
     });
@@ -184,6 +185,23 @@ export async function addCartItem(productVariantId: string, quantity: number) {
   const admin = createAdminSupabaseClient();
   const { error } = await admin.rpc("cart_add_item_atomic", { p_cart_id: cart.id, p_variant_id: productVariantId, p_quantity: quantity });
   if (error) {
+    // OUT_OF_STOCK (zero stock) is distinct from VARIANT_UNAVAILABLE (unpublished/
+    // inactive/deleted) -- see supabase/migrations/202608030002_out_of_stock_attempts.sql.
+    // Only the former is worth logging as a demand signal for restocking.
+    if (error.message.includes("OUT_OF_STOCK")) {
+      // A broken log must never turn a clean 409 into a 500 -- the rejection itself
+      // already reached the shopper correctly, so both failure shapes (a rejected
+      // call and a resolved { error }, which is how supabase-js actually reports an
+      // RPC failure) are swallowed here.
+      try {
+        const auth = await optionalAuth();
+        const { error: logError } = await admin.rpc("log_out_of_stock_attempt", { p_variant_id: productVariantId, p_quantity: quantity, p_actor_id: auth?.userId ?? null });
+        if (logError) logger.error("out_of_stock_log_failed", { productVariantId, error: logError.message });
+      } catch (logCause) {
+        logger.error("out_of_stock_log_failed", { productVariantId, error: String(logCause) });
+      }
+      throw new ApiError(409, "OUT_OF_STOCK", "This option just sold out.");
+    }
     if (error.message.includes("VARIANT_UNAVAILABLE")) throw new ApiError(422, "VARIANT_UNAVAILABLE", "The selected product option is unavailable.");
     throw new ApiError(503, "SERVICE_UNAVAILABLE", "The item could not be added to the cart.");
   }

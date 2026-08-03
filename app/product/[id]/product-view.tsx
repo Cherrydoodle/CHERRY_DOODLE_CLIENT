@@ -1,30 +1,40 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { ChevronRight, Heart, Minus, Plus, ShoppingBag, Truck, Undo2 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { ProductCard, ProductBadges } from "@/components/ProductCard";
+import { ProductCard } from "@/components/ProductCard";
+import { VariantOption } from "@/components/VariantOption";
 import { track } from "@/lib/analytics/posthog";
 import type { ProductDetailDTO } from "@/features/catalog/types";
 import { formatMoney } from "@/lib/format";
-import { shimmerPlaceholder } from "@/lib/image/shimmer";
 import { ShopApiError, useShop } from "@/lib/store";
+import { ProductGallery } from "./product-gallery";
+
+// Distinct copy for the two ways an add can fail: a variant that just sold out
+// (worth offering an alternative for) vs. one that's no longer purchasable at all
+// (unpublished/inactive/deleted).
+const ADD_TO_CART_ERROR_COPY: Record<string, string> = {
+  OUT_OF_STOCK: "Sold out — this option just went out of stock.",
+  VARIANT_UNAVAILABLE: "This option is no longer available.",
+};
 
 export function ProductView({ product }: { product: ProductDetailDTO }) {
   const [variantId, setVariantId] = useState(product.variants.find((item) => item.availability !== "out_of_stock")?.id ?? product.variants[0]?.id);
   const [qty, setQty] = useState(1);
   const [added, setAdded] = useState(false);
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const { addToCart, toggleWishlist, isWished } = useShop();
-  const [main, setMain] = useState(0);
 
   const variant = product.variants.find((item) => item.id === variantId) ?? product.variants[0];
-  const outOfStock = !variant || variant.availability === "out_of_stock";
   // A variant with its own images swaps the whole gallery; otherwise it falls back
   // to the product's shared gallery, unchanged from before variants had images.
   const gallery = variant?.images.length ? variant.images : product.gallery.length ? product.gallery : [product.primaryImage];
+  // Offered only after a sold-out rejection, so the shopper isn't stuck on a dead option.
+  const alternativeVariant = errorCode === "OUT_OF_STOCK" ? product.variants.find((option) => option.id !== variant?.id && option.availability !== "out_of_stock") : undefined;
 
   useEffect(() => {
     const price = product.pricing.saleCents ?? product.pricing.listCents;
@@ -36,16 +46,36 @@ export function ProductView({ product }: { product: ProductDetailDTO }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fire once per product page visit; re-selecting a color variant shouldn't recount it.
   }, [product.id]);
 
+  // Stock is intentionally not checked upfront on this page -- the server is the only
+  // trustworthy source (the availability shown elsewhere is a cached hint), so the
+  // check happens here, at the moment of intent.
   const handleAdd = async () => {
-    if (!variant) return;
+    if (!variant || pending) return;
     setError(null);
+    setErrorCode(null);
+    setPending(true);
     try {
-      await addToCart(variant.id, qty);
+      await addToCart(variant.id, qty, { silent: true });
       setAdded(true);
       window.setTimeout(() => setAdded(false), 1600);
     } catch (cause) {
-      setError(cause instanceof ShopApiError ? cause.message : "Could not add this to your bag. Please try again.");
+      if (cause instanceof ShopApiError) {
+        setErrorCode(cause.code);
+        setError(ADD_TO_CART_ERROR_COPY[cause.code] ?? cause.message);
+      } else {
+        setError("Could not add this to your bag. Please try again.");
+      }
+    } finally {
+      setPending(false);
     }
+  };
+
+  const switchToAlternative = () => {
+    if (!alternativeVariant) return;
+    setVariantId(alternativeVariant.id);
+    setQty(1);
+    setError(null);
+    setErrorCode(null);
   };
 
   return (
@@ -60,24 +90,7 @@ export function ProductView({ product }: { product: ProductDetailDTO }) {
 
       <div className="grid gap-8 lg:grid-cols-2">
         <div>
-          <div className="relative rounded-3xl overflow-hidden bg-blush shadow-soft aspect-square">
-            <Image src={gallery[main]!.urls.detail} alt={gallery[main]!.alt} preload fill sizes="(min-width: 1024px) 50vw, 100vw" placeholder="blur" blurDataURL={shimmerPlaceholder(1200, 1200)} className="object-cover" />
-            <ProductBadges badges={product.badges} />
-          </div>
-          <div className="grid grid-cols-4 gap-3 mt-3">
-            {gallery.map((image, index) => (
-              <button
-                type="button"
-                key={image.id}
-                onClick={() => setMain(index)}
-                className={`relative aspect-square rounded-2xl overflow-hidden border-2 ${main === index ? "border-primary" : "border-transparent"}`}
-                aria-label={`Show product image ${index + 1}`}
-                aria-pressed={main === index}
-              >
-                <Image src={image.urls.thumb} alt="" fill sizes="120px" placeholder="blur" blurDataURL={shimmerPlaceholder(160, 160)} className="object-cover" />
-              </button>
-            ))}
-          </div>
+          <ProductGallery key={variant?.id ?? "default"} images={gallery} badges={product.badges} />
         </div>
 
         <div>
@@ -105,15 +118,13 @@ export function ProductView({ product }: { product: ProductDetailDTO }) {
                 <button
                   type="button"
                   key={option.id}
-                  onClick={() => { setVariantId(option.id); setQty(1); setMain(0); }}
-                  disabled={option.availability === "out_of_stock"}
-                  className={`flex items-center gap-2 rounded-full border-2 px-3 py-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${variantId === option.id ? "border-primary ring-2 ring-primary/30" : "border-border"}`}
-                  title={option.availability === "out_of_stock" ? `${option.label} (out of stock)` : option.label}
+                  onClick={() => { setVariantId(option.id); setQty(1); setError(null); setErrorCode(null); }}
+                  className={`flex items-center gap-2 rounded-full border-2 px-3 py-1.5 ${variantId === option.id ? "border-primary ring-2 ring-primary/30" : "border-border"}`}
+                  title={option.label}
                   aria-label={option.label}
                   aria-pressed={variantId === option.id}
                 >
-                  <span className="h-4 w-4 shrink-0 rounded-full border border-border/40" style={{ background: option.color.hex }} />
-                  <span className="text-xs font-semibold">{option.label}</span>
+                  <VariantOption variant={option} />
                 </button>
               ))}
             </div>
@@ -128,9 +139,9 @@ export function ProductView({ product }: { product: ProductDetailDTO }) {
               <span className="w-10 text-center font-bold">{qty}</span>
               <button type="button" onClick={() => setQty((value) => Math.min(variant?.maxQuantity ?? 99, value + 1))} className="h-11 w-11 grid place-items-center hover:bg-blush rounded-full" aria-label="Increase quantity"><Plus className="h-4 w-4" /></button>
             </div>
-            <button type="button" onClick={handleAdd} disabled={outOfStock} className="btn-primary flex-1 disabled:cursor-not-allowed disabled:opacity-60">
+            <button type="button" onClick={handleAdd} disabled={pending} className="btn-primary flex-1 disabled:cursor-not-allowed disabled:opacity-60">
               <ShoppingBag className="h-4 w-4" />
-              {outOfStock ? "Out of stock" : added ? "Added! 💕" : "Add to bag"}
+              {pending ? "Adding…" : added ? "Added! 💕" : "Add to bag"}
             </button>
             <button
               type="button"
@@ -142,7 +153,16 @@ export function ProductView({ product }: { product: ProductDetailDTO }) {
               <Heart className={`h-5 w-5 ${isWished(product.id) ? "fill-cherry text-cherry" : ""}`} />
             </button>
           </div>
-          {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
+          {error && (
+            <div role="alert" className="mt-3 rounded-2xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              <p className="font-semibold">{error}</p>
+              {alternativeVariant && (
+                <button type="button" onClick={switchToAlternative} className="mt-1.5 text-xs font-semibold underline underline-offset-2">
+                  Try {alternativeVariant.label} instead
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="mt-8 grid sm:grid-cols-2 gap-3">
             <div className="rounded-2xl bg-blush/60 p-4 flex gap-3">

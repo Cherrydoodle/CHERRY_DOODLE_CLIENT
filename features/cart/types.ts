@@ -6,7 +6,7 @@ export type CartDTO = {
   items: Array<{
     id: string;
     quantity: number;
-    variant: { id: string; sku: string; label: string; color: ColorDTO };
+    variant: { id: string; sku: string; label: string; color: ColorDTO | null };
     product: ProductSummaryDTO;
     unitPriceCents: number;
     lineTotalCents: number;

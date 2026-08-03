@@ -40,22 +40,31 @@ export type ProductSummaryDTO = {
   availability: Availability;
 };
 
+type VariantOptionBase = {
+  id: string;
+  sku: string;
+  label: string;
+  /** This variant's own images, if any were assigned in admin. Empty when it shares the product's default gallery. */
+  images: ImageDTO[];
+  availability: Availability;
+  maxQuantity: number;
+};
+
+/** A variant is either color-backed (has a swatch) or name-only (a pack size, an
+ * edition) -- `kind` lets rendering code switch on one field instead of guessing
+ * from a possibly-null `color`. Adding a future kind (e.g. size) means adding a
+ * union member, not touching every existing consumer. */
+export type VariantOptionDTO =
+  | (VariantOptionBase & { kind: "color"; color: ColorDTO })
+  | (VariantOptionBase & { kind: "name"; color: null });
+
 export type ProductDetailDTO = ProductSummaryDTO & {
   description: string;
   material: string;
   size: string;
   category: { slug: string; name: string; parent: { slug: string; name: string } };
   gallery: ImageDTO[];
-  variants: Array<{
-    id: string;
-    sku: string;
-    label: string;
-    color: ColorDTO;
-    /** This variant's own images, if any were assigned in admin. Empty when it shares the product's default gallery. */
-    images: ImageDTO[];
-    availability: Availability;
-    maxQuantity: number;
-  }>;
+  variants: VariantOptionDTO[];
   shippingMessage: string;
   returnsMessage: string;
   related: ProductSummaryDTO[];
